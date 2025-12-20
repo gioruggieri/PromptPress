@@ -31,7 +31,7 @@ Open `http://localhost:3000`.
 1) Install Tampermonkey in your browser.
 2) Create a new userscript and paste the script below.
 3) Open `https://chatgpt.com`, click "Copy clean" on a response, and paste into PromptPress.
-4) Keep "Auto-fix for LLM output" enabled for best results.
+4) Keep "ON" enabled for best results.
 
 ```javascript
 // ==UserScript==
