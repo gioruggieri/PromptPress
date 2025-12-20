@@ -1,17 +1,31 @@
 {
-  "name": "web",
+  "name": "massive-mark-clone",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint ."
   },
   "dependencies": {
+    "clsx": "^2.1.1",
+    "docx": "^9.5.1",
+    "jszip": "^3.10.1",
+    "katex": "^0.16.11",
+    "mathml-to-latex": "^1.5.0",
+    "mathml2omml": "^0.5.0",
     "next": "16.0.10",
+    "node-html-parser": "^7.0.1",
+    "puppeteer": "^24.20.0",
     "react": "19.2.1",
-    "react-dom": "19.2.1"
+    "react-dom": "19.2.1",
+    "react-markdown": "^9.0.1",
+    "rehype-katex": "^7.0.1",
+    "rehype-raw": "^7.0.0",
+    "rehype-sanitize": "^6.0.0",
+    "remark-gfm": "^4.0.0",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

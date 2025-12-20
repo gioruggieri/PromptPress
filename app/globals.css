@@ -1,26 +1,175 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: dark;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #4b5563 #0f172a;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #6366f1, #22d3ee);
+  border-radius: 9999px;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  min-height: 100vh;
+  background: radial-gradient(circle at 20% 20%, rgba(99, 102, 241, 0.18), transparent 32%),
+    radial-gradient(circle at 80% 0%, rgba(45, 212, 191, 0.14), transparent 26%),
+    #050712;
+  color: #e5e7eb;
+}
+
+a {
+  color: #a5b4fc;
+}
+
+textarea {
+  background: transparent;
+  color: inherit;
+}
+
+.shadow-border {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.markdown {
+  color: #e5e7eb;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  font-weight: 700;
+  line-height: 1.2;
+  margin: 1.25rem 0 0.75rem;
+  color: #eef2ff;
+}
+
+.markdown h1 {
+  font-size: 1.9rem;
+}
+
+.markdown h2 {
+  font-size: 1.6rem;
+}
+
+.markdown h3 {
+  font-size: 1.35rem;
+}
+
+.markdown p {
+  margin: 0.75rem 0;
+  color: #d1d5db;
+}
+
+.markdown ul,
+.markdown ol {
+  margin: 0.5rem 0 0.75rem 1.25rem;
+  padding: 0 0 0 0.5rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.markdown li {
+  color: #d1d5db;
+}
+
+.markdown code {
+  background: rgba(100, 116, 139, 0.2);
+  padding: 0.2rem 0.45rem;
+  border-radius: 0.5rem;
+  font-size: 0.95rem;
+  color: #e0f2fe;
+}
+
+.markdown pre {
+  background: #0b1224;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 1rem;
+  border-radius: 1rem;
+  overflow-x: auto;
+  color: #f8fafc;
+}
+
+.markdown blockquote {
+  margin: 1rem 0;
+  padding: 0.9rem 1.25rem;
+  border-left: 4px solid #38bdf8;
+  background: rgba(56, 189, 248, 0.08);
+  border-radius: 0.9rem;
+  color: #cbd5f5;
+}
+
+.markdown table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1rem 0;
+}
+
+.markdown th,
+.markdown td {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0.55rem 0.75rem;
+}
+
+.markdown th {
+  background: rgba(99, 102, 241, 0.2);
+  color: #e0e7ff;
+  text-align: left;
+}
+
+.markdown td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.markdown hr {
+  margin: 1.5rem 0;
+  border: none;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.25), transparent);
+}
+
+.markdown .katex {
+  font-size: 1.05em;
+  color: #e0f2fe;
+}
+
+.markdown .katex-display {
+  margin: 1rem 0;
+  padding: 0.75rem 0.9rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(2, 6, 23, 0.45);
+}
+
+.markdown .katex-display > .katex {
+  white-space: nowrap;
+}
+
+.markdown .katex-error {
+  color: #fca5a5;
+}
+
+.glow {
+  position: absolute;
+  width: 52rem;
+  height: 52rem;
+  filter: blur(120px);
+  opacity: 0.2;
+  z-index: -1;
 }

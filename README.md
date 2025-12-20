@@ -1,36 +1,28 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PromptPress Studio
 
-## Getting Started
+Next.js web app for pasting LLM output (Gemini, GPT, Claude), previewing Markdown with LaTeX, and downloading DOCX or PDF already laid out.
 
-First, run the development server:
+## Stack
+- Next.js 16 (App Router) + React 19
+- Tailwind CSS (v4) for UI
+- `react-markdown` + `remark-math` + `rehype-katex` for math rendering
+- Server-side DOCX export with `docx` + KaTeX/MathML -> OMML conversion (`mathml2omml`) for editable Word equations
+- Server-side PDF export with `puppeteer` (Chromium) to avoid `html2canvas` limitations with modern CSS (e.g. `oklab()`)
 
+## Local setup
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
+Open `http://localhost:3000`.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Key features
+- Paste or load a sample LLM response.
+- Markdown/GFM support, inline math `$E=mc^2$`, and `$$ ... $$` blocks.
+- Auto-fix mode for LLM output: removes indentation that turns into code blocks and converts `\(...\)` / `\[...\]` to `$...$` / `$$...$$`.
+- Live preview with KaTeX, modern styling, and separate input/output sections.
+- Export to `promptpress-export.docx` or `promptpress-export.pdf` directly from the browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Notes
+- DOCX: `/api/docx` generates a file with Word Equation (OMML) math. If a formula fails to convert, it stays visible as monospaced TeX (it does not disappear).
+- PDF: `/api/pdf` generates a multi-page HTML-to-PDF via Chromium (faithful render, no `oklab()` issues).
