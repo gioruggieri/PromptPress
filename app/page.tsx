@@ -2317,21 +2317,6 @@ export default function Home() {
                   >
                     {autoFix ? "On" : "Off"}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const base = normalizeCopyCodeBlocks(value);
-                      const fixed =
-                        llmSource === "gemini"
-                          ? normalizeLlmMarkdown(base)
-                          : normalizeChatgptMarkdown(base);
-                      setValue(fixed);
-                      setStatus("Fix applied to text");
-                    }}
-                    className={clsx(buttonStyles, "bg-indigo-500/20")}
-                  >
-                    Apply fix
-                  </button>
                 </div>
               </div>
             </section>
