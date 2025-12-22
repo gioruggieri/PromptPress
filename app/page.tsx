@@ -2363,13 +2363,14 @@ export default function Home() {
               <button
                 type="button"
                 onClick={exportDocx}
-                disabled
+                disabled={busy === "docx"}
                 className={clsx(
                   buttonStyles,
-                  "bg-indigo-500/30 px-5 cursor-not-allowed opacity-50",
+                  "bg-indigo-500/30 px-5",
+                  busy === "docx" && "cursor-not-allowed opacity-60",
                 )}
               >
-                Export DOCX (disabled)
+                {busy === "docx" ? "Exporting..." : "Export DOCX"}
               </button>
               <button
                 type="button"

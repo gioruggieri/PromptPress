@@ -1,3 +1,4 @@
+// app/api/export/docx/route.ts
 import { NextResponse } from "next/server";
 import {
   AlignmentType,
@@ -19,11 +20,14 @@ import { parse, type HTMLElement, type Node as HtmlNode } from "node-html-parser
 import katex from "katex";
 import JSZip from "jszip";
 import { mml2omml } from "mathml2omml";
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
+import type { Document as XmlDoc, Element as XmlEl, Node as XmlNode } from "@xmldom/xmldom";
 
 export const runtime = "nodejs";
 
 type DocxChild = Paragraph | Table;
 type InlineChild = ParagraphChild;
+
 type MathReplacement = { token: string; omml: string };
 type MathContext = { nextId: number; replacements: MathReplacement[] };
 
@@ -31,6 +35,8 @@ type BlockContext = {
   list?: { ordered: boolean; level: number };
   cellHeader?: boolean;
 };
+
+const M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math";
 
 const stripZeroWidth = (value: string) =>
   value.replace(
@@ -109,24 +115,343 @@ const texToMathMl = (tex: string, displayMode: boolean) => {
 const cleanMathMl = (mathML: string) =>
   mathML.replace(/<annotation[\s\S]*?<\/annotation>/gi, "");
 
+/**
+ * Normalizza ambienti LaTeX in modo che la semantica dei delimitatori sia esplicita.
+ * Utile perché alcuni converter MathML->OMML degradano la "stretchiness".
+ */
+const normalizeDocxLatex = (tex: string) =>
+  tex
+    .replace(
+      /\\begin\{bmatrix\}([\s\S]*?)\\end\{bmatrix\}/g,
+      String.raw`\left[\begin{matrix}$1\end{matrix}\right]`,
+    )
+    .replace(
+      /\\begin\{pmatrix\}([\s\S]*?)\\end\{pmatrix\}/g,
+      String.raw`\left(\begin{matrix}$1\end{matrix}\right)`,
+    )
+    .replace(
+      /\\begin\{Bmatrix\}([\s\S]*?)\\end\{Bmatrix\}/g,
+      String.raw`\left\{\begin{matrix}$1\end{matrix}\right\}`,
+    )
+    .replace(
+      /\\begin\{vmatrix\}([\s\S]*?)\\end\{vmatrix\}/g,
+      String.raw`\left|\begin{matrix}$1\end{matrix}\right|`,
+    )
+    .replace(
+      /\\begin\{Vmatrix\}([\s\S]*?)\\end\{Vmatrix\}/g,
+      String.raw`\left\|\begin{matrix}$1\end{matrix}\right\|`,
+    )
+    .replace(
+      /\\begin\{smallmatrix\}([\s\S]*?)\\end\{smallmatrix\}/g,
+      String.raw`\left(\begin{smallmatrix}$1\end{smallmatrix}\right)`,
+    );
+
+const tagLocal = (name: string) => (name.includes(":") ? name.split(":")[1] : name);
+const isM = (el: XmlEl, local: string) => tagLocal(el.tagName) === local;
+
+const parseOmmlFragment = (omml: string): { doc: XmlDoc; root: XmlEl } | null => {
+  // rimuovi xml decl ed eventuali namespace duplicati dentro il frammento
+  const cleaned = omml
+    .replace(/^\s*<\?xml[^>]*\?>\s*/i, "")
+    .replace(/\s+xmlns:m="[^"]+"/g, "")
+    .replace(/\s+xmlns:w="[^"]+"/g, "")
+    .trim();
+
+  // Wrappiamo in un root per parsare frammenti
+  const wrapped = `<root xmlns:m="${M_NS}">${cleaned}</root>`;
+
+  const doc = new DOMParser({
+    errorHandler: { warning: () => {}, error: () => {}, fatalError: () => {} },
+  }).parseFromString(wrapped, "application/xml") as unknown as XmlDoc;
+
+  const root = doc.documentElement as unknown as XmlEl;
+  if (!root || root.tagName !== "root") return null;
+
+  // Se xmldom ha inserito <parsererror> (in alcuni ambienti), fallback
+  const anyParserError = (root.getElementsByTagName("parsererror")?.length ?? 0) > 0;
+  if (anyParserError) return null;
+
+  return { doc, root };
+};
+
+const serializeOmmlChildren = (root: XmlEl) => {
+  const ser = new XMLSerializer();
+  let out = "";
+  for (let n = root.firstChild; n; n = n.nextSibling) {
+    // serializza solo nodi element/text rilevanti
+    out += ser.serializeToString(n as unknown as XmlNode);
+  }
+  return out;
+};
+
+const runTextIfSingleChar = (run: XmlEl) => {
+  if (!isM(run, "r")) return null;
+  let tEl: XmlEl | null = null;
+
+  for (let n = run.firstChild; n; n = n.nextSibling) {
+    if (n.nodeType === 1) {
+      const el = n as unknown as XmlEl;
+      if (isM(el, "t")) {
+        tEl = el;
+        break;
+      }
+      // a volte <m:rPr> precede <m:t>, lo ignoriamo
+    }
+  }
+  if (!tEl) return null;
+
+  const txt = (tEl.textContent ?? "").trim();
+  if (!txt) return null;
+
+  // accettiamo solo singolo “glyph” (es. "[" , "|" , "‖")
+  // NB: alcuni simboli sono surrogate pair; per semplicità controlliamo lunghezza in code points
+  const codePoints = Array.from(txt);
+  if (codePoints.length !== 1) return null;
+
+  return codePoints[0];
+};
+
+const isTall = (el: XmlEl) => {
+  const local = tagLocal(el.tagName);
+  // Copertura pratica dei “tall constructs” che beneficiano di delimitatori stretchy
+  return new Set([
+    "m",       // matrix
+    "eqArr",   // array/cases/aligned-like
+    "f",       // fraction
+    "rad",     // root
+    "nary",    // sum/int/prod
+    "stack",   // stacked
+    "limLow",
+    "limUpp",
+    "box",
+    "bar",
+    "groupChr",
+    "sSub",
+    "sSup",
+    "sSubSup",
+  ]).has(local);
+};
+
+const createDelimiter = (doc: XmlDoc, beg: string, end: string, inner: XmlEl) => {
+  const d = doc.createElementNS(M_NS, "m:d") as unknown as XmlEl;
+  const dPr = doc.createElementNS(M_NS, "m:dPr") as unknown as XmlEl;
+
+  const begChr = doc.createElementNS(M_NS, "m:begChr") as unknown as XmlEl;
+  begChr.setAttribute("m:val", beg);
+
+  const endChr = doc.createElementNS(M_NS, "m:endChr") as unknown as XmlEl;
+  endChr.setAttribute("m:val", end);
+
+  const grow = doc.createElementNS(M_NS, "m:grow") as unknown as XmlEl;
+  // m:val opzionale; lo mettiamo esplicito per compatibilità
+  grow.setAttribute("m:val", "1");
+
+  dPr.appendChild(begChr as unknown as XmlNode);
+  dPr.appendChild(endChr as unknown as XmlNode);
+  dPr.appendChild(grow as unknown as XmlNode);
+
+  const e = doc.createElementNS(M_NS, "m:e") as unknown as XmlEl;
+  // sposta "inner" dentro <m:e>
+  e.appendChild(inner as unknown as XmlNode);
+
+  d.appendChild(dPr as unknown as XmlNode);
+  d.appendChild(e as unknown as XmlNode);
+
+  return d;
+};
+
+const promoteDelimitersInContainer = (container: XmlEl) => {
+  // Scansiona triple (run open) (tall) (run close) tra i children diretti del container
+  const pairs: Array<[string, string]> = [
+    ["(", ")"],
+    ["[", "]"],
+    ["{", "}"],
+    ["⟨", "⟩"],
+    ["|", "|"],
+    ["‖", "‖"],
+  ];
+
+  const nextElementIndex = (nodes: XmlNode[], start: number) => {
+    for (let i = start; i < nodes.length; i += 1) {
+      if (nodes[i]?.nodeType === 1) return i;
+    }
+    return -1;
+  };
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const nodes = Array.from(container.childNodes) as unknown as XmlNode[];
+
+    for (let i = 0; i < nodes.length; i += 1) {
+      if (nodes[i]?.nodeType !== 1) continue;
+      const a = nodes[i] as unknown as XmlEl;
+
+      const openChar = runTextIfSingleChar(a);
+      if (!openChar) continue;
+
+      const j = nextElementIndex(nodes, i + 1);
+      if (j === -1) continue;
+
+      const k = nextElementIndex(nodes, j + 1);
+      if (k === -1) continue;
+
+      const b = nodes[j] as unknown as XmlEl;
+      const c = nodes[k] as unknown as XmlEl;
+
+      if (!isTall(b)) continue;
+
+      const closeChar = runTextIfSingleChar(c);
+      if (!closeChar) continue;
+
+      // verifica se (openChar, closeChar) è una coppia ammessa
+      const ok = pairs.some(([beg, end]) => beg === openChar && end === closeChar);
+      if (!ok) continue;
+
+      // Costruisci <m:d> e sostituisci open/b/close
+      const d = createDelimiter(container.ownerDocument as unknown as XmlDoc, openChar, closeChar, b);
+
+      // inserisci prima dell'open run
+      container.insertBefore(d as unknown as XmlNode, a as unknown as XmlNode);
+
+      // rimuovi open run (a) e close run (c); b è già stato "spostato" dentro d
+      container.removeChild(a as unknown as XmlNode);
+      container.removeChild(c as unknown as XmlNode);
+
+      changed = true;
+      break;
+    }
+  }
+};
+
+const traverseElements = (root: XmlEl, fn: (el: XmlEl) => void) => {
+  const stack: XmlEl[] = [root];
+  while (stack.length) {
+    const el = stack.pop()!;
+    fn(el);
+
+    for (let n = el.lastChild; n; n = n.previousSibling) {
+      if (n.nodeType === 1) stack.push(n as unknown as XmlEl);
+    }
+  }
+};
+
+const repairInvalidScripts = (root: XmlEl) => {
+  // Unwrap di script invalidi per evitare OMML non conforme (Word lo considera “corrotto”).
+  // Strategia: se manca sub/sup, rimpiazza l'elemento con il contenuto di <m:e> (base).
+  const unwrapToBase = (node: XmlEl) => {
+    const parent = node.parentNode as unknown as XmlEl | null;
+    if (!parent) return;
+
+    let base: XmlEl | null = null;
+    for (let n = node.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 1) {
+        const el = n as unknown as XmlEl;
+        if (isM(el, "e")) {
+          base = el;
+          break;
+        }
+      }
+    }
+
+    // inserisci i figli della base prima del nodo script
+    if (base) {
+      while (base.firstChild) {
+        parent.insertBefore(base.firstChild as unknown as XmlNode, node as unknown as XmlNode);
+      }
+    }
+
+    parent.removeChild(node as unknown as XmlNode);
+  };
+
+  // due passate per sicurezza (modifichiamo l'albero mentre iteriamo)
+  for (let pass = 0; pass < 2; pass += 1) {
+    const toCheck: XmlEl[] = [];
+    traverseElements(root, (el) => {
+      const local = tagLocal(el.tagName);
+      if (local === "sSub" || local === "sSup" || local === "sSubSup") toCheck.push(el);
+    });
+
+    for (const el of toCheck) {
+      const local = tagLocal(el.tagName);
+
+      let hasE = false;
+      let hasSub = false;
+      let hasSup = false;
+
+      for (let n = el.firstChild; n; n = n.nextSibling) {
+        if (n.nodeType !== 1) continue;
+        const c = n as unknown as XmlEl;
+        if (isM(c, "e")) hasE = true;
+        if (isM(c, "sub")) hasSub = true;
+        if (isM(c, "sup")) hasSup = true;
+      }
+
+      if (!hasE) {
+        // senza base, non ha senso: elimina
+        unwrapToBase(el);
+        continue;
+      }
+
+      if (local === "sSub" && !hasSub) {
+        unwrapToBase(el);
+      } else if (local === "sSup" && !hasSup) {
+        unwrapToBase(el);
+      } else if (local === "sSubSup" && (!hasSub || !hasSup)) {
+        // se manca uno dei due, unwrap a base (soluzione conservativa)
+        unwrapToBase(el);
+      }
+    }
+  }
+};
+
+const postProcessOmml = (omml: string): string | null => {
+  const parsed = parseOmmlFragment(omml);
+  if (!parsed) return null;
+
+  const { root } = parsed;
+
+  // 1) Promuovi delimitatori (stretchy) in tutti i container
+  traverseElements(root, (el) => {
+    // Evita di promuovere dentro <m:t> ovviamente (anche se non dovrebbe contenere elementi)
+    if (isM(el, "t")) return;
+    promoteDelimitersInContainer(el);
+  });
+
+  // 2) Ripara script incompleti (m:sSub senza m:sub, ecc.)
+  repairInvalidScripts(root);
+
+  // 3) Serializza children del wrapper <root> come frammento OMML finale
+  return serializeOmmlChildren(root).trim();
+};
+
 const buildOmmlFromElement = (el: HTMLElement): string | null => {
   const displayMode =
     el.classList.contains("katex-display") ||
     el.querySelector("math")?.getAttribute("display") === "block";
 
-  const mathML = extractMathMlFromKatex(el);
-  const sourceMathMl = mathML
-    ? mathML
-    : (() => {
-        const tex = extractLatexFromKatex(el);
-        if (!tex) return null;
-        return texToMathMl(tex, displayMode);
-      })();
+  const tex = extractLatexFromKatex(el);
+  const hasMatrixLike =
+    !!tex && /\\begin\{(?:bmatrix|pmatrix|Bmatrix|vmatrix|Vmatrix|matrix|smallmatrix)\}/.test(tex);
+
+  // Preferisci l'HTML MathML di KaTeX quando non ci sono casi “critici”
+  const mathML = !hasMatrixLike ? extractMathMlFromKatex(el) : null;
+
+  const sourceMathMl =
+    mathML ??
+    (() => {
+      if (!tex) return null;
+      return texToMathMl(normalizeDocxLatex(tex), displayMode);
+    })();
 
   if (!sourceMathMl) return null;
 
   try {
-    return mml2omml(cleanMathMl(sourceMathMl));
+    const raw = mml2omml(cleanMathMl(sourceMathMl));
+    const processed = postProcessOmml(raw);
+
+    // se post-process fallisce, meglio tornare raw (di solito valido) che null
+    return processed ?? raw;
   } catch {
     return null;
   }
@@ -253,7 +578,11 @@ const blockFromNode = (
   if (node.nodeType === 3) {
     const text = normalizeText(node.rawText ?? "");
     if (!text) return [];
-    return [paragraphFromInline([textRunFromNode(text, ctx?.cellHeader ? { bold: true } : undefined)])];
+    return [
+      paragraphFromInline([
+        textRunFromNode(text, ctx?.cellHeader ? { bold: true } : undefined),
+      ]),
+    ];
   }
 
   if (node.nodeType !== 1) return [];
@@ -309,7 +638,9 @@ const blockFromNode = (
 
         if (!cell) {
           cellBlocks.push(
-            paragraphFromInline([textRunFromNode("", isHeaderRow ? { bold: true } : undefined)]),
+            paragraphFromInline([
+              textRunFromNode("", isHeaderRow ? { bold: true } : undefined),
+            ]),
           );
         } else {
           for (const child of cell.childNodes as HtmlNode[]) {
@@ -320,7 +651,9 @@ const blockFromNode = (
           }
           if (!cellBlocks.length) {
             cellBlocks.push(
-              paragraphFromInline([textRunFromNode("", isHeaderRow ? { bold: true } : undefined)]),
+              paragraphFromInline([
+                textRunFromNode("", isHeaderRow ? { bold: true } : undefined),
+              ]),
             );
           }
         }
@@ -354,9 +687,7 @@ const blockFromNode = (
 
   if (tag === "ul" || tag === "ol") {
     const ordered = tag === "ol";
-    const items = Array.from(el.children).filter(
-      (child) => getTag(child) === "li",
-    );
+    const items = Array.from(el.children).filter((child) => getTag(child) === "li");
     const out: DocxChild[] = [];
 
     for (let i = 0; i < items.length; i += 1) {
@@ -407,7 +738,7 @@ const blockFromNode = (
   if (tag === "p" || tag === "div") {
     const children = inlineFromNodes(el.childNodes as HtmlNode[], {}, math);
     if (!children.length) return [];
-    return [paragraphFromInline(children, ctx?.cellHeader ? { } : undefined)];
+    return [paragraphFromInline(children, ctx?.cellHeader ? {} : undefined)];
   }
 
   const out: DocxChild[] = [];
@@ -417,10 +748,7 @@ const blockFromNode = (
   return out;
 };
 
-const patchDocxWithMath = async (
-  fileBuffer: Buffer,
-  replacements: MathReplacement[],
-) => {
+const patchDocxWithMath = async (fileBuffer: Buffer, replacements: MathReplacement[]) => {
   if (!replacements.length) return fileBuffer;
 
   const zip = await JSZip.loadAsync(fileBuffer);
@@ -429,6 +757,7 @@ const patchDocxWithMath = async (
 
   let xml = await documentXml.async("string");
 
+  // Ensure OMML namespace is declared
   if (!xml.includes("xmlns:m=")) {
     xml = xml.replace(
       /<w:document\b([^>]*)>/,
@@ -438,32 +767,10 @@ const patchDocxWithMath = async (
 
   const cleanOmml = (value: string) =>
     value
+      .replace(/^\s*<\?xml[^>]*\?>\s*/i, "")
       .replace(/\s+xmlns:m="[^"]+"/g, "")
-      .replace(/\s+xmlns:w="[^"]+"/g, "");
-
-  const sanitizeOmml = (value: string) => {
-    const escaped = sanitizeXmlText(value).replace(
-      /&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)/g,
-      "&amp;",
-    );
-
-    return escaped.replace(/<m:t([^>]*)>([\s\S]*?)<\/m:t>/g, (_m, attrs, text) => {
-      const safeText = String(text)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-      return `<m:t${attrs}>${safeText}</m:t>`;
-    });
-  };
-
-  const wrapOmmlRun = (value: string) => {
-    const trimmed = value.trim();
-    if (/<w:r[\s>]/.test(trimmed)) return trimmed;
-    return (
-      `<w:r><w:rPr><w:rFonts w:ascii="Cambria Math" w:hAnsi="Cambria Math"/>` +
-      `</w:rPr>${trimmed}</w:r>`
-    );
-  };
+      .replace(/\s+xmlns:w="[^"]+"/g, "")
+      .trim();
 
   for (const { token, omml } of replacements) {
     const tokenIndex = xml.indexOf(token);
@@ -471,6 +778,7 @@ const patchDocxWithMath = async (
 
     const runStart = xml.lastIndexOf("<w:r", tokenIndex);
     if (runStart === -1) continue;
+
     const runEnd = xml.indexOf("</w:r>", tokenIndex);
     if (runEnd === -1) continue;
 
@@ -478,7 +786,8 @@ const patchDocxWithMath = async (
     const runSlice = xml.slice(runStart, runClose);
     if (!runSlice.includes(token)) continue;
 
-    const safeOmml = wrapOmmlRun(sanitizeOmml(cleanOmml(omml)));
+    // IMPORTANT: insert OMML directly (do NOT wrap in <w:r> and do NOT escape tags)
+    const safeOmml = cleanOmml(omml);
     xml = xml.slice(0, runStart) + safeOmml + xml.slice(runClose);
   }
 
@@ -501,6 +810,7 @@ export async function POST(request: Request) {
 
     const math: MathContext = { nextId: 1, replacements: [] };
     const children: DocxChild[] = [];
+
     for (const node of root.childNodes as HtmlNode[]) {
       children.push(...blockFromNode(node, undefined, math));
     }
@@ -511,24 +821,9 @@ export async function POST(request: Request) {
           {
             reference: "ordered",
             levels: [
-              {
-                level: 0,
-                format: LevelFormat.DECIMAL,
-                text: "%1.",
-                alignment: AlignmentType.START,
-              },
-              {
-                level: 1,
-                format: LevelFormat.LOWER_LETTER,
-                text: "%2.",
-                alignment: AlignmentType.START,
-              },
-              {
-                level: 2,
-                format: LevelFormat.LOWER_ROMAN,
-                text: "%3.",
-                alignment: AlignmentType.START,
-              },
+              { level: 0, format: LevelFormat.DECIMAL, text: "%1.", alignment: AlignmentType.START },
+              { level: 1, format: LevelFormat.LOWER_LETTER, text: "%2.", alignment: AlignmentType.START },
+              { level: 2, format: LevelFormat.LOWER_ROMAN, text: "%3.", alignment: AlignmentType.START },
             ],
           },
         ],
@@ -539,10 +834,8 @@ export async function POST(request: Request) {
     const fileBuffer = await Packer.toBuffer(doc);
     const patched = await patchDocxWithMath(fileBuffer, math.replacements);
 
-    const mime =
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    const body =
-      patched instanceof Blob ? patched : new Blob([patched as BlobPart], { type: mime });
+    const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const body = patched instanceof Blob ? patched : new Blob([patched as BlobPart], { type: mime });
 
     return new NextResponse(body, {
       status: 200,
@@ -553,9 +846,6 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.error("DOCX export error", error);
-    return NextResponse.json(
-      { error: "Errore durante la generazione del DOCX" },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: "Errore durante la generazione del DOCX" }, { status: 500 });
   }
 }
