@@ -1,9 +1,7 @@
 {
   "functions": {
     "api/pdf": {
-      "includeFiles": [
-        "node_modules/@sparticuz/chromium/**"
-      ]
+      "includeFiles": "node_modules/@sparticuz/chromium/**"
     }
   }
 }
