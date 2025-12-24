@@ -2267,7 +2267,7 @@ export default function Home() {
                 PromptPress
               </p>
               <h1 className="text-3xl font-semibold text-white sm:text-4xl md:text-5xl">
-                From LLM to MD/PDF in one click
+                From LLM to DOCX/MD/PDF in one click
               </h1>
               <p className="max-w-3xl text-lg text-slate-300">
                 Paste raw output from Gemini or any LLM, preview the rendered
