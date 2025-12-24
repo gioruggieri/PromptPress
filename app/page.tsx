@@ -7,6 +7,7 @@ import { MathMLToLaTeX } from "mathml-to-latex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import clsx from "clsx";
+import { render } from "katex";
 
 const starter = `# PromptPress style
 Copied from an LLM, formatted to be readable and ready to export.
@@ -1166,6 +1167,78 @@ const fixLatexInlineTokens = (input: string) => {
   return line;
 };
 
+const escapePipesInMath = (input: string) => {
+  const lines = input.split("\n");
+  let inFence = false;
+  let fenceToken: "```" | "~~~" | null = null;
+
+  const escapeLine = (line: string) => {
+    let out = "";
+    let inInline = false;
+    let inDisplay = false;
+    let inCode = false;
+
+    const isEscapedPipe = (index: number) => {
+      let count = 0;
+      for (let j = index - 1; j >= 0; j -= 1) {
+        if (line[j] !== "\\") break;
+        count += 1;
+      }
+      return count % 2 === 1;
+    };
+
+    for (let i = 0; i < line.length; i += 1) {
+      if (!inCode && line.startsWith("$$", i)) {
+        inDisplay = !inDisplay;
+        out += "$$";
+        i += 1;
+        continue;
+      }
+
+      const ch = line[i];
+      if (!inDisplay && ch === "`") {
+        inCode = !inCode;
+        out += ch;
+        continue;
+      }
+
+      if (!inDisplay && !inCode && ch === "$") {
+        inInline = !inInline;
+        out += ch;
+        continue;
+      }
+
+      if ((inInline || inDisplay) && ch === "|" && !isEscapedPipe(i)) {
+        out += "\\|";
+        continue;
+      }
+
+      out += ch;
+    }
+
+    return out;
+  };
+
+  return lines
+    .map((line) => {
+      const fenceMatch = line.match(/^\s*(```|~~~)/);
+      if (fenceMatch) {
+        const token = fenceMatch[1] as "```" | "~~~";
+        if (!inFence) {
+          inFence = true;
+          fenceToken = token;
+        } else if (fenceToken === token) {
+          inFence = false;
+          fenceToken = null;
+        }
+        return line;
+      }
+      if (inFence) return line;
+      return escapeLine(line);
+    })
+    .join("\n");
+};
+
 const normalizeLlmMarkdown = (input: string) => {
   const normalized = promoteInlineMathBlocks(liftUnbalancedInlineMath(input));
   const lines = normalized.split("\n");
@@ -1349,7 +1422,8 @@ const normalizeLlmMarkdown = (input: string) => {
       ),
     ),
   );
-  return stripZeroWidth(normalizedMath).replace(/\n{3,}/g, "\n\n").trimEnd();
+  const pipeSafe = escapePipesInMath(normalizedMath);
+  return stripZeroWidth(pipeSafe).replace(/\n{3,}/g, "\n\n").trimEnd();
 };
 
 const normalizeLatexEnvironments = (input: string) => {
@@ -1661,6 +1735,36 @@ const fixEscapedSubscriptsInMath = (input: string) => {
 };
 // ChatGPT: Tampermonkey already copies clean TeX; we only do small
 // fixes and filter linear fallbacks (without touching normal text).
+const ensureMathWrapped = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  if (/^\$[\s\S]*\$$/.test(trimmed)) return trimmed;
+  if (!/[\\]|\^|_|\{|\}/.test(trimmed)) return trimmed;
+  return `$${trimmed}$`;
+};
+
+const normalizeTableRow = (line: string, colCount: number) => {
+  const hasLeading = line.trimStart().startsWith("|");
+  const hasTrailing = line.trimEnd().endsWith("|");
+  const trimmed = line.trim();
+  const parts = trimmed.split("|");
+  const core = parts.slice(hasLeading ? 1 : 0, hasTrailing ? -1 : undefined);
+
+  if (core.length === 0) return line;
+
+  const merged: string[] = [];
+  for (const part of core) {
+    if (merged.length < colCount) merged.push(part);
+    else merged[merged.length - 1] += `\|${part}`;
+  }
+
+  while (merged.length < colCount) merged.push(" " );
+
+  const normalizedCells = merged.map((cell) => ensureMathWrapped(cell));
+  const rebuilt = `${hasLeading ? "|" : ""}${normalizedCells.join("|")}${hasTrailing ? "|" : ""}`;
+  return rebuilt;
+};
+
 const normalizeChatgptMarkdown = (input: string) => {
   const normalized = promoteInlineMathBlocks(liftUnbalancedInlineMath(input));
   const lines = normalized.split("\n");
@@ -1756,9 +1860,9 @@ const normalizeChatgptMarkdown = (input: string) => {
           .filter((c) => c.trim().length > 0).length;
         const separator =
           cols > 0 ? "|" + Array(cols).fill(" --- ").join("|") + "|" : "| --- |";
-        output.push(block[0]);
+        output.push(normalizeTableRow(block[0], cols));
         output.push(separator);
-        for (let k = 1; k < block.length; k += 1) output.push(block[k]);
+        for (let k = 1; k < block.length; k += 1) output.push(normalizeTableRow(block[k], cols));
         i = j - 1;
         continue;
       }
@@ -1780,7 +1884,8 @@ const normalizeChatgptMarkdown = (input: string) => {
       ),
     ),
   );
-  return stripZeroWidth(normalizedMath).replace(/\n{3,}/g, "\n\n").trimEnd();
+  const pipeSafe = escapePipesInMath(normalizedMath);
+  return stripZeroWidth(pipeSafe).replace(/\n{3,}/g, "\n\n").trimEnd();
 };
 
 const markdownComponents: Components = {
@@ -2091,7 +2196,7 @@ export default function Home() {
   };
 
   const exportMarkdown = () => {
-    const content = renderedMarkdown.trim();
+    const content = renderedMarkdown.trim ();
     const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
     downloadBlob(blob, "promptpress-export.md");
     setStatus("Markdown exported");
@@ -2395,3 +2500,7 @@ export default function Home() {
     </div>
   );
 }
+
+
+
+

@@ -43,6 +43,11 @@ Open `http://localhost:3000`.
   const stripZeroWidth = (text) =>
     text.replace(/[\u200B\u200C\u200D\u2060\uFEFF\u00AD\u202A-\u202E\u2066-\u2069]/g, "");
 
+  const escapePipes = (text) =>
+    text.replace(/\|/g, (m, offset, str) =>
+      offset > 0 && str[offset - 1] === "\\" ? "|" : "\\|",
+    );
+
   const normalizeMatrixRows = (tex) => {
     if (!/\\begin\{(bmatrix|pmatrix|matrix|aligned|align\*?|cases|array)\}/.test(tex)) {
       return tex;
@@ -118,9 +123,9 @@ Open `http://localhost:3000`.
       let text = raw
         .replace(/\n\s*\$\$\s*\n([\s\S]*?)\n\s*\$\$\s*\n/g, (_, math) => `$${String(math).trim()}$`)
         .replace(/\n+/g, " ")
-        .replace(/\|/g, "\\|")
         .trim();
 
+      text = escapePipes(text);
       return text.length ? text : " ";
     };
 
