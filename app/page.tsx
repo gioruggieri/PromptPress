@@ -2468,26 +2468,6 @@ export default function Home() {
               </div>
             </section>
           </div>
-          <section className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-lg shadow-black/40">
-            <div className="flex items-center gap-2">
-              <span className="h-2 w-2 rounded-full bg-cyan-400" />
-              <h2 className="text-base font-semibold text-white">
-                Quick start (Tampermonkey + ChatGPT copy)
-              </h2>
-            </div>
-            <ol className="mt-3 list-decimal space-y-1 pl-5 text-sm text-slate-200">
-              <li>Install Tampermonkey in your browser.</li>
-              <li>Create a new userscript and paste the script below.</li>
-              <li>Open https://chatgpt.com, click "Copy clean", and paste here.</li>
-              <li>Keep Auto-fix set to On for best results.</li>
-            </ol>
-            <div className="mt-4 rounded-xl border border-white/10 bg-black/30 p-3">
-              <pre className="overflow-x-auto text-[11px] leading-relaxed text-slate-200">
-                <code>{tampermonkeyScript}</code>
-              </pre>
-            </div>
-          </section>
-
           <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 shadow-lg shadow-black/40 md:flex-row md:items-center md:justify-between">
             <div className="flex flex-wrap items-center gap-3">
               <button
@@ -2527,6 +2507,26 @@ export default function Home() {
               {status ?? "Ready to export"}
             </div>
           </div>
+
+          <section className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-lg shadow-black/40">
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-cyan-400" />
+              <h2 className="text-base font-semibold text-white">
+                Quick start (Tampermonkey + ChatGPT copy)
+              </h2>
+            </div>
+            <ol className="mt-3 list-decimal space-y-1 pl-5 text-sm text-slate-200">
+              <li>Install Tampermonkey in your browser.</li>
+              <li>Create a new userscript and paste the script below.</li>
+              <li>Open https://chatgpt.com, click "Copy clean", and paste here.</li>
+              <li>Keep Auto-fix set to On for best results.</li>
+            </ol>
+            <div className="mt-4 rounded-xl border border-white/10 bg-black/30 p-3">
+              <pre className="overflow-x-auto text-[11px] leading-relaxed text-slate-200">
+                <code>{tampermonkeyScript}</code>
+              </pre>
+            </div>
+          </section>
         </div>
       </main>
     </div>
