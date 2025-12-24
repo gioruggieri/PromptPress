@@ -7,6 +7,8 @@ export const runtime = "nodejs";
 
 let katexCssPromise: Promise<string> | null = null;
 
+const isVercel = Boolean(process.env.VERCEL);
+
 const getKatexCss = async () => {
   if (!katexCssPromise) {
     katexCssPromise = (async () => {
@@ -161,7 +163,7 @@ const exportCss = `
 `;
 
 export async function POST(request: Request) {
-  let browser: import("puppeteer").Browser | null = null;
+  let browser: import("puppeteer-core").Browser | null = null;
   try {
     const { html } = await request.json();
 
@@ -169,13 +171,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Missing HTML" }, { status: 400 });
     }
 
-    const [{ default: puppeteer }, katexCss] = await Promise.all([
-      import("puppeteer"),
+    const [katexCss, chromium, puppeteer] = await Promise.all([
       getKatexCss(),
+      isVercel ? import("@sparticuz/chromium") : Promise.resolve(null),
+      isVercel ? import("puppeteer-core") : import("puppeteer"),
     ]);
 
     const fullHtml = `<!DOCTYPE html>
-<html lang="it">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -188,10 +191,20 @@ export async function POST(request: Request) {
   </body>
 </html>`;
 
-    browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
+    if (isVercel && chromium) {
+      const executablePath = await chromium.executablePath();
+      browser = await puppeteer.launch({
+        args: chromium.args,
+        defaultViewport: chromium.defaultViewport,
+        executablePath,
+        headless: chromium.headless,
+      });
+    } else {
+      browser = await puppeteer.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      });
+    }
 
     const page = await browser.newPage();
     await page.setContent(fullHtml, { waitUntil: ["domcontentloaded"] });
@@ -218,10 +231,7 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.error("PDF export error", error);
-    return NextResponse.json(
-      { error: "Errore durante la generazione del PDF" },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: "Error generating PDF" }, { status: 500 });
   } finally {
     if (browser) {
       try {
