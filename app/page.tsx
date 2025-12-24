@@ -1,6 +1,7 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
+import Link from "next/link";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import { MathMLToLaTeX } from "mathml-to-latex";
@@ -104,10 +105,10 @@ const clipboardHtmlToMarkdown = (html: string) => {
       if (tag === "button") return true;
 
       const aria = (el.getAttribute("aria-label") ?? "").toLowerCase();
-      if (aria.includes("copy code") || aria.includes("copia codice")) return true;
+      if (aria.includes("copy code")) return true;
 
       const title = (el.getAttribute("title") ?? "").toLowerCase();
-      if (title.includes("copy code") || title.includes("copia codice")) return true;
+      if (title.includes("copy code")) return true;
 
       const testId = (el.getAttribute("data-testid") ?? "").toLowerCase();
       if (testId.includes("copy") && testId.includes("code")) return true;
@@ -990,7 +991,7 @@ const normalizeCopyCodeBlocks = (input: string) => {
 
   const pushArrowLines = (value: string) => {
     if (!value) return;
-    const parts = value.split(/\s*↓\s*/);
+    const parts = value.split(/\s*Ôåô\s*/);
     if (parts.length === 1) {
       out.push(value);
       return;
@@ -998,7 +999,7 @@ const normalizeCopyCodeBlocks = (input: string) => {
     const first = parts[0].trim();
     if (first) out.push(first);
     for (let i = 1; i < parts.length; i += 1) {
-      out.push("↓");
+      out.push("Ôåô");
       const chunk = parts[i].trim();
       if (chunk) out.push(chunk);
     }
@@ -1286,7 +1287,7 @@ const normalizeLlmMarkdown = (input: string) => {
     }
 
     // Convert common Unicode bullets (often produced by LLMs) to Markdown lists.
-    line = line.replace(/^\s*[•‣∙◦]\s+/, "- ");
+    line = line.replace(/^\s*[ÔÇóÔÇúÔêÖÔùª]\s+/, "- ");
 
     // Gemini/LLM sometimes indents lists/equations => Markdown interprets them as code blocks.
     if (/^( {4,}|\t+)/.test(line)) {
@@ -1925,6 +1926,9 @@ const markdownComponents: Components = {
 const buttonStyles =
   "flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-medium text-slate-100 shadow-lg shadow-black/30 transition hover:-translate-y-0.5 hover:border-white/30 hover:bg-white/15 active:translate-y-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400";
 
+
+const tampermonkeyScript = "// ==UserScript==\n// @name         ChatGPT Copy Clean (tables + math)\n// @match        https://chatgpt.com/*\n// @grant        GM_setClipboard\n// ==/UserScript==\n(function () {\n  const stripZeroWidth = (text) =\u003e\n    text.replace(/[\\u200B\\u200C\\u200D\\u2060\\uFEFF\\u00AD\\u202A-\\u202E\\u2066-\\u2069]/g, \"\");\n\n  const escapePipes = (text) =\u003e\n    text.replace(/\\|/g, (m, offset, str) =\u003e\n      offset \u003e 0 \u0026\u0026 str[offset - 1] === \"\\\\\" ? \"|\" : \"\\\\|\",\n    );\n\n  const normalizeMatrixRows = (tex) =\u003e {\n    if (!/\\\\begin\\{(bmatrix|pmatrix|matrix|aligned|align\\*?|cases|array)\\}/.test(tex)) {\n      return tex;\n    }\n    return tex.replace(/(?\u003c!\\\\)\\\\\\\\s*(?=[0-9+\\-\\s\\]])/g, \"\\\\\\\\\");\n  };\n\n  const flattenMath = (tex) =\u003e\n    tex\n      .replace(/\\r\\n?/g, \"\\n\")\n      .split(\"\\n\")\n      .map((l) =\u003e l.trim())\n      .filter(Boolean)\n      .join(\" \");\n\n  const wrapMath = (tex, displayHint) =\u003e {\n    let body = normalizeMatrixRows(tex);\n    body = flattenMath(body);\n\n    const wantsDisplay =\n      displayHint ||\n      /\\\\begin\\{[^}]+\\}/.test(body) ||\n      /\\\\end\\{[^}]+\\}/.test(body);\n\n    if (wantsDisplay) return `\\n\\n$$\\n${body}\\n$$\\n\\n`;\n    return `$${body}$`;\n  };\n\n  const isNoise = (el) =\u003e {\n    const tag = el.tagName.toLowerCase();\n    if (tag === \"button\") return true;\n    const aria = (el.getAttribute(\"aria-label\") || \"\").toLowerCase();\n    if (aria.includes(\"copy code\")) return true;\n    const testId = (el.getAttribute(\"data-testid\") || \"\").toLowerCase();\n    if (testId.includes(\"copy\") \u0026\u0026 testId.includes(\"code\")) return true;\n    return false;\n  };\n\n  const renderTable = (tableEl) =\u003e {\n    const rows = Array.from(tableEl.querySelectorAll(\"tr\"));\n    if (!rows.length) return \"\";\n\n    const headerRow = tableEl.querySelector(\"thead tr\") || rows[0];\n    const headerCells = Array.from(headerRow.querySelectorAll(\"th, td\"));\n    if (!headerCells.length) return \"\";\n\n    const colCount = headerCells.length;\n    const bodyRows =\n      headerRow === rows[0] ? rows.slice(1) : rows.filter((r) =\u003e r !== headerRow);\n\n    const renderCell = (cell) =\u003e {\n      const walkCell = (node) =\u003e {\n        if (node.nodeType === Node.TEXT_NODE) {\n          return stripZeroWidth(node.textContent || \"\");\n        }\n        if (node.nodeType !== Node.ELEMENT_NODE) return \"\";\n        const el = node;\n\n        if (el.classList.contains(\"katex\") || el.classList.contains(\"katex-display\")) {\n          const ann = el.querySelector(\u0027annotation[encoding=\"application/x-tex\"]\u0027);\n          const tex = ann ? ann.textContent.trim() : (el.textContent || \"\").trim();\n          const display = el.classList.contains(\"katex-display\");\n          return wrapMath(tex, display);\n        }\n\n        const tag = el.tagName.toLowerCase();\n        if (tag === \"br\") return \"\\n\";\n\n        return Array.from(el.childNodes).map(walkCell).join(\"\");\n      };\n\n      const raw = Array.from(cell.childNodes).map(walkCell).join(\"\");\n      let text = raw\n        .replace(/\\n\\s*\\$\\$\\s*\\n([\\s\\S]*?)\\n\\s*\\$\\$\\s*\\n/g, (_, math) =\u003e `$${String(math).trim()}$`)\n        .replace(/\\n+/g, \" \")\n        .trim();\n\n      text = escapePipes(text);\n      return text.length ? text : \" \";\n    };\n\n    const buildRow = (cells) =\u003e {\n      const values = [];\n      for (let i = 0; i \u003c colCount; i += 1) {\n        values.push(cells[i] ? renderCell(cells[i]) : \" \");\n      }\n      return `| ${values.join(\" | \")} |`;\n    };\n\n    const headerLine = buildRow(headerCells);\n    const separator = `| ${Array(colCount).fill(\"---\").join(\" | \")} |`;\n    const bodyLines = bodyRows\n      .map((row) =\u003e buildRow(Array.from(row.querySelectorAll(\"th, td\"))))\n      .join(\"\\n\");\n\n    return `\\n\\n${headerLine}\\n${separator}${bodyLines ? `\\n${bodyLines}` : \"\"}\\n\\n`;\n  };\n\n  const htmlToMarkdown = (root) =\u003e {\n    const out = [];\n    const walk = (node) =\u003e {\n      if (node.nodeType === Node.TEXT_NODE) {\n        out.push(stripZeroWidth(node.textContent || \"\"));\n        return;\n      }\n      if (node.nodeType !== Node.ELEMENT_NODE) return;\n      const el = node;\n\n      if (isNoise(el)) return;\n\n      if (el.classList.contains(\"katex\") || el.classList.contains(\"katex-display\")) {\n        const ann = el.querySelector(\u0027annotation[encoding=\"application/x-tex\"]\u0027);\n        const tex = ann ? ann.textContent.trim() : (el.textContent || \"\").trim();\n        const display = el.classList.contains(\"katex-display\");\n        out.push(wrapMath(tex, display));\n        return;\n      }\n\n      const tag = el.tagName.toLowerCase();\n      if (tag === \"table\") {\n        out.push(renderTable(el));\n        return;\n      }\n      if (tag === \"pre\") {\n        const code = el.textContent || \"\";\n        out.push(`\\n\\n\\`\\`\\`\\n${code.replace(/\\n$/, \"\")}\\n\\`\\`\\`\\n\\n`);\n        return;\n      }\n      if (tag === \"br\") {\n        out.push(\"\\n\");\n        return;\n      }\n\n      const children = Array.from(el.childNodes);\n      children.forEach(walk);\n\n      if (tag === \"p\" || tag === \"div\") out.push(\"\\n\\n\");\n      if (/^h[1-6]$/.test(tag)) out.push(\"\\n\\n\");\n    };\n\n    walk(root);\n    return out.join(\"\").replace(/\\n{3,}/g, \"\\n\\n\").trim();\n  };\n\n  const addButtons = () =\u003e {\n    document.querySelectorAll(\u0027[data-message-id]\u0027).forEach((msg) =\u003e {\n      if (msg.querySelector(\u0027.copy-clean-btn\u0027)) return;\n      const btn = document.createElement(\u0027button\u0027);\n      btn.textContent = \u0027Copy clean\u0027;\n      btn.className = \u0027copy-clean-btn\u0027;\n      btn.style.marginLeft = \u00278px\u0027;\n      btn.onclick = () =\u003e copyClean(msg);\n      const toolbar = msg.querySelector(\u0027[data-testid=\"toolbox\"]\u0027) || msg;\n      toolbar.appendChild(btn);\n    });\n  };\n\n  const copyClean = (msg) =\u003e {\n    const html = msg.innerHTML;\n    const div = document.createElement(\u0027div\u0027);\n    div.innerHTML = html;\n\n    const md = htmlToMarkdown(div);\n    GM_setClipboard(md, \u0027text\u0027);\n    alert(\u0027Copied clean\u0027);\n  };\n\n  setInterval(addButtons, 1000);\n})();";
+
 export default function Home() {
   const previewRef = useRef<HTMLDivElement>(null);
   const pasteSequenceRef = useRef(0);
@@ -2056,7 +2060,7 @@ export default function Home() {
     const smart = buildSmartPasteText(plain, html, rtf);
 
     if (smart !== plain) {
-      // We recovered something synchronously (HTML/RTF → TeX or filled `$$ $$` placeholders).
+      // We recovered something synchronously (HTML/RTF ÔåÆ TeX or filled `$$ $$` placeholders).
       event.preventDefault();
       insertText(smart);
       setStatus("Pasted (math recovered)");
@@ -2284,6 +2288,15 @@ export default function Home() {
                   Docx &amp; PDF export
                 </span>
               </div>
+              <div className="pt-2">
+                <Link
+                  href="/instructions"
+                  className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-indigo-500/30 transition hover:border-indigo-300/40 hover:bg-indigo-500/20"
+                >
+                  Read instructions
+                  <span aria-hidden="true">-&gt;</span>
+                </Link>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 text-center text-sm font-medium text-slate-200 shadow-lg">
               <div className="flex flex-col gap-1 rounded-xl bg-black/30 px-3 py-2">
@@ -2455,6 +2468,25 @@ export default function Home() {
               </div>
             </section>
           </div>
+          <section className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-lg shadow-black/40">
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-cyan-400" />
+              <h2 className="text-base font-semibold text-white">
+                Quick start (Tampermonkey + ChatGPT copy)
+              </h2>
+            </div>
+            <ol className="mt-3 list-decimal space-y-1 pl-5 text-sm text-slate-200">
+              <li>Install Tampermonkey in your browser.</li>
+              <li>Create a new userscript and paste the script below.</li>
+              <li>Open https://chatgpt.com, click "Copy clean", and paste here.</li>
+              <li>Keep Auto-fix set to On for best results.</li>
+            </ol>
+            <div className="mt-4 rounded-xl border border-white/10 bg-black/30 p-3">
+              <pre className="overflow-x-auto text-[11px] leading-relaxed text-slate-200">
+                <code>{tampermonkeyScript}</code>
+              </pre>
+            </div>
+          </section>
 
           <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 shadow-lg shadow-black/40 md:flex-row md:items-center md:justify-between">
             <div className="flex flex-wrap items-center gap-3">
@@ -2500,6 +2532,8 @@ export default function Home() {
     </div>
   );
 }
+
+
 
 
 

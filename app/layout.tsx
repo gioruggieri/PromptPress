@@ -27,7 +27,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="it">
+    <html lang="en">
       <body
         className={`${manrope.variable} ${jetBrains.variable} bg-slate-950 text-slate-100 antialiased`}
       >
