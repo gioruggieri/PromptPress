@@ -173,7 +173,9 @@ export async function POST(request: Request) {
 
     const [katexCss, chromium, puppeteer] = await Promise.all([
       getKatexCss(),
-      isVercel ? import("@sparticuz/chromium") : Promise.resolve(null),
+      isVercel
+        ? import("@sparticuz/chromium").then((mod) => mod.default)
+        : Promise.resolve(null),
       isVercel ? import("puppeteer-core") : import("puppeteer"),
     ]);
 
