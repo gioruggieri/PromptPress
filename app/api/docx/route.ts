@@ -21,7 +21,10 @@ import katex from "katex";
 import JSZip from "jszip";
 import { mml2omml } from "mathml2omml";
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
-import type { Document as XmlDoc, Element as XmlEl, Node as XmlNode } from "@xmldom/xmldom";
+
+type XmlDoc = globalThis.Document;
+type XmlEl = globalThis.Element;
+type XmlNode = globalThis.Node;
 
 export const runtime = "nodejs";
 
