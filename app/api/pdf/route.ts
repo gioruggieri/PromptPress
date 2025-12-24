@@ -171,6 +171,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Missing HTML" }, { status: 400 });
     }
 
+    if (isVercel) {
+      process.env.AWS_EXECUTION_ENV ??= "AWS_Lambda_nodejs20.x";
+      process.env.AWS_LAMBDA_JS_RUNTIME ??= "nodejs20.x";
+    }
+
     const [katexCss, chromium, puppeteer] = await Promise.all([
       getKatexCss(),
       isVercel
