@@ -50,7 +50,7 @@ const hasMathMarkers = (text: string) =>
   /(\$\$|\\\(|\\\[|\\begin\{)/.test(text) || looksLikeLatex(text);
 
 const stripZeroWidth = (text: string) =>
-  text.replace(/[\u200B\u200C\u200D\u2060\u2062\uFEFF\u00AD\u202A-\u202E\u2066-\u2069]/g, "");
+  text.replace(/[\u200B\u200C\u200D\u2060-\u2064\uFEFF\u00AD\u202A-\u202E\u2066-\u2069]/g, "");
 
 const normalizeMathMlLatex = (texRaw: string) => {
   const tex = texRaw.trim();
@@ -213,7 +213,110 @@ const clipboardHtmlToMarkdown = (html: string) => {
       return `${prefix}${first}\n${rest}`.trimEnd();
     };
 
-    const renderInline = (node: Node, list?: ListContext): string => {
+    const getStyleValue = (el: Element, prop: string) => {
+      const style = el.getAttribute("style") ?? "";
+      const match = style.match(new RegExp(`${prop}\\s*:\\s*([^;]+)`, "i"));
+      return match ? match[1].trim().toLowerCase() : "";
+    };
+
+    const hasClass = (el: Element, pattern: RegExp) =>
+      pattern.test((el.getAttribute("class") ?? "").toLowerCase());
+
+    const isBoldLike = (el: Element) => {
+      const weight = getStyleValue(el, "font-weight");
+      if (weight) {
+        if (weight.includes("bold") || weight.includes("bolder")) return true;
+        const numeric = Number.parseInt(weight, 10);
+        if (!Number.isNaN(numeric) && numeric >= 600) return true;
+      }
+      return hasClass(el, /(^|\s)(font-bold|font-semibold|fw-bold|bold)(\s|$)/);
+    };
+
+    const isItalicLike = (el: Element) => {
+      const style = getStyleValue(el, "font-style");
+      if (style && /italic|oblique/.test(style)) return true;
+      return hasClass(el, /(^|\s)(italic|font-italic|is-italic)(\s|$)/);
+    };
+
+    const parseFontSize = (value: string) => {
+      const raw = value.trim().toLowerCase();
+      const match = raw.match(/^([0-9]*\.?[0-9]+)\s*(px|pt|em|rem|%)$/);
+      if (match) {
+        const amount = Number.parseFloat(match[1]);
+        if (!Number.isFinite(amount)) return null;
+        const unit = match[2];
+        if (unit === "px") return amount;
+        if (unit === "pt") return (amount * 96) / 72;
+        if (unit === "em" || unit === "rem") return amount * 16;
+        if (unit === "%") return (amount / 100) * 16;
+      }
+
+      if (raw === "xx-large") return 32;
+      if (raw === "x-large") return 24;
+      if (raw === "large" || raw === "larger") return 20;
+      if (raw === "medium") return 16;
+      if (raw === "small" || raw === "smaller") return 13;
+      return null;
+    };
+
+    const fontSizeFromClass = (className: string) => {
+      if (/\btext-5xl\b/.test(className)) return 48;
+      if (/\btext-4xl\b/.test(className)) return 36;
+      if (/\btext-3xl\b/.test(className)) return 30;
+      if (/\btext-2xl\b/.test(className)) return 24;
+      if (/\btext-xl\b/.test(className)) return 20;
+      if (/\btext-lg\b/.test(className)) return 18;
+      return null;
+    };
+
+    const getFontSizePx = (el: Element) => {
+      const className = (el.getAttribute("class") ?? "").toLowerCase();
+      const fromClass = fontSizeFromClass(className);
+      if (fromClass) return fromClass;
+
+      const styleValue = getStyleValue(el, "font-size");
+      if (!styleValue) return null;
+      return parseFontSize(styleValue);
+    };
+
+    const getHeadingLevelFromStyle = (el: Element) => {
+      const sizePx = getFontSizePx(el);
+      if (!sizePx) return null;
+      if (sizePx >= 32) return 1;
+      if (sizePx >= 26) return 2;
+      if (sizePx >= 22) return 3;
+      if (sizePx >= 20) return 4;
+      return null;
+    };
+
+    const hasBlockChildren = (el: Element) => {
+      const blockTags = new Set([
+        "p",
+        "div",
+        "section",
+        "article",
+        "ul",
+        "ol",
+        "table",
+        "pre",
+        "blockquote",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+      ]);
+      return Array.from(el.children).some((child) =>
+        blockTags.has(child.tagName.toLowerCase()),
+      );
+    };
+
+    const renderInline = (
+      node: Node,
+      list?: ListContext,
+      marks: { bold?: boolean; italics?: boolean; code?: boolean } = {},
+    ): string => {
       if (node.nodeType === Node.TEXT_NODE) {
         return normalizeText(node.textContent ?? "");
       }
@@ -227,15 +330,31 @@ const clipboardHtmlToMarkdown = (html: string) => {
       if (tag === "br") return "\n";
       if (tag === "ul" || tag === "ol") return "";
 
+      const bold = tag === "strong" || tag === "b" || isBoldLike(el);
+      const italics = tag === "em" || tag === "i" || isItalicLike(el);
+      const code = tag === "code";
+
+      const nextMarks = {
+        bold: marks.bold || bold,
+        italics: marks.italics || italics,
+        code: marks.code || code,
+      };
+
       const content = Array.from(el.childNodes)
-        .map((child) => renderInline(child, list))
+        .map((child) => renderInline(child, list, nextMarks))
         .join("");
 
-      if (tag === "strong" || tag === "b") return `**${content}**`;
-      if (tag === "em" || tag === "i") return `*${content}*`;
-      if (tag === "code") return "`" + content + "`";
-      if (tag === "a") return content;
-      return content;
+      if (!content) return "";
+
+      let out = content;
+      if (code && !marks.code) out = "`" + out + "`";
+      if (bold && !marks.bold && italics && !marks.italics) {
+        out = `***${out}***`;
+      } else {
+        if (bold && !marks.bold) out = `**${out}**`;
+        if (italics && !marks.italics) out = `*${out}*`;
+      }
+      return out;
     };
 
     const renderTable = (tableEl: Element) => {
@@ -348,6 +467,22 @@ const clipboardHtmlToMarkdown = (html: string) => {
           : "- ";
         const content = renderInline(el);
         return `${formatListItem(prefix, content)}\n`;
+      }
+
+      if (
+        tag === "p" ||
+        tag === "div" ||
+        tag === "section" ||
+        tag === "article"
+      ) {
+        const headingLevel = getHeadingLevelFromStyle(el);
+        if (headingLevel && !hasBlockChildren(el)) {
+          const text = renderInline(el).replace(/\n+/g, " ").trim();
+          if (text) {
+            const hashes = "#".repeat(headingLevel);
+            return `${hashes} ${text}\n\n`;
+          }
+        }
       }
 
       if (/^h[1-6]$/.test(tag)) {
@@ -814,6 +949,18 @@ const buildSmartPasteText = (plain: string, html?: string, rtf?: string) => {
   const htmlHasRichBlocks = Boolean(
     html && /<(table|pre|code|ul|ol|blockquote|h[1-6])\b/i.test(html),
   );
+  const htmlHasInlineFormatting = Boolean(
+    html &&
+      (/<(strong|b|em|i|h[1-6])\b/i.test(html) ||
+        /font-weight\s*:\s*(bold|bolder|[6-9]00)/i.test(html) ||
+        /font-style\s*:\s*(italic|oblique)/i.test(html) ||
+        /font-size\s*:\s*(\d+(\.\d+)?(px|pt|em|rem|%)|x-large|xx-large|larger)/i.test(
+          html,
+        ) ||
+        /class=["'][^"']*\b(?:font-bold|font-semibold|italic|text-(?:lg|xl|2xl|3xl|4xl|5xl))\b/i.test(
+          html,
+        )),
+  );
   const plainHasMath = hasMathMarkers(plainClean);
   const plainHasEmptyDisplayMath = /\$\$\s*\$\$/.test(plainClean);
 
@@ -850,7 +997,8 @@ const buildSmartPasteText = (plain: string, html?: string, rtf?: string) => {
 
   // If HTML has math or rich blocks (tables/code), prefer the HTML version to avoid
   // flattened text/plain copies that lose structure.
-  if ((htmlHasMath || htmlHasRichBlocks) && fromHtml) return fromHtml;
+  if ((htmlHasMath || htmlHasRichBlocks || htmlHasInlineFormatting) && fromHtml)
+    return fromHtml;
 
   if (!extracted.length) return plainNormalized;
 
@@ -1168,6 +1316,60 @@ const fixLatexInlineTokens = (input: string) => {
   return line;
 };
 
+const unicodeMathRegex = /[\u2200-\u22ff\u2190-\u21ff\u0370-\u03ff]/;
+
+const normalizeUnicodeMathText = (value: string) => {
+  if (!unicodeMathRegex.test(value) && !/[\u2591-\u2593]/.test(value)) return value;
+  let normalized = stripZeroWidth(value);
+  normalized = normalized.replace(/[\"“”]/g, "");
+  normalized = normalized.replace(/[\u2591-\u2593]/g, "");
+  normalized = normalized.replace(/_\(([^)]+)\)/g, "_{$1}");
+  normalized = normalized.replace(/\^\(([^)]+)\)/g, "^{$1}");
+  normalized = normalized.replace(/\^\s*['′]/g, "'");
+  normalized = normalized.replace(/(\d+)\s*\/\s*(\|[^|]+\|)/g, "\\\\frac{$1}{$2}");
+  normalized = normalized.replace(/(\d+)\s*\/\s*(∣[^∣]+∣)/g, "\\\\frac{$1}{$2}");
+  normalized = normalized.replace(/\s{2,}/g, " ").trim();
+  return normalized || value;
+};
+
+const normalizeUnicodeMathLine = (line: string) => {
+  if (!line.trim()) return line;
+
+  if (line.includes("$")) {
+    let next = line.replace(
+      /(\$\$)([\s\S]*?)(\$\$)/g,
+      (_m, open, body, close) => `${open}${normalizeUnicodeMathText(body)}${close}`,
+    );
+    next = next.replace(
+      /(?<!\$)\$([^$\n]+)\$(?!\$)/g,
+      (_m, body) => `$${normalizeUnicodeMathText(body)}$`,
+    );
+    return next;
+  }
+
+  if (/\\[a-zA-Z]+/.test(line)) return line;
+  const trimmed = line.trim();
+  const pipeCount = trimmed.match(/\|/g)?.length ?? 0;
+  if (pipeCount >= 2 && (trimmed.startsWith("|") || trimmed.endsWith("|")))
+    return line;
+
+  const listMatch = line.match(
+    /^(\s*(?:>+\s*)?(?:\d+\.\s+|[-*+]\s+))(.*)$/,
+  );
+  const prefix = listMatch ? listMatch[1] : "";
+  const body = listMatch ? listMatch[2] : trimmed;
+
+  if (!unicodeMathRegex.test(body)) return line;
+
+  const normalized = normalizeUnicodeMathText(body);
+  if (!normalized) return line;
+
+  const display =
+    normalized.length > 60 || /[=≠≤≥≈]/.test(normalized) || normalized.includes("∑");
+  const wrapped = display ? `$$${normalized}$$` : `$${normalized}$`;
+  return prefix ? `${prefix}${wrapped}` : wrapped;
+};
+
 const escapePipesInMath = (input: string) => {
   const lines = input.split("\n");
   let inFence = false;
@@ -1305,6 +1507,7 @@ const normalizeLlmMarkdown = (input: string) => {
     }
 
     line = fixLatexInlineTokens(line);
+    line = normalizeUnicodeMathLine(line);
 
     const dollarSplit = splitDoubleDollarMath(line);
     const preExpanded = dollarSplit ?? [line];
@@ -1666,7 +1869,7 @@ const liftMultilineInlineMath = (input: string) =>
 
 const fixEscapedSubscriptsInMath = (input: string) => {
   const zeroWidthRegex =
-    /[\u200B\u200C\u200D\u2060\uFEFF\u00AD\u202A-\u202E\u2066-\u2069]+/g;
+    /[\u200B\u200C\u200D\u2060-\u2064\uFEFF\u00AD\u202A-\u202E\u2066-\u2069]+/g;
 
   const recoverSubscriptsFromZeroWidth = (body: string) => {
     const wrapBase = (value: string) =>
@@ -1779,7 +1982,8 @@ const normalizeChatgptMarkdown = (input: string) => {
   let inFence = false;
   let fenceToken: "```" | "~~~" | null = null;
   let inMathBlock = false;
-  for (const line of fixedLines) {
+  for (const rawLine of fixedLines) {
+    let line = rawLine;
     const fenceMatch = line.match(/^\s*(```|~~~)/);
     if (fenceMatch) {
       const token = fenceMatch[1] as "```" | "~~~";
@@ -1797,6 +2001,8 @@ const normalizeChatgptMarkdown = (input: string) => {
       cleaned.push(line);
       continue;
     }
+
+    line = normalizeUnicodeMathLine(line);
 
     const dollarCount = line.match(/\$\$/g)?.length ?? 0;
     if (dollarCount > 0) {
@@ -1927,7 +2133,7 @@ const buttonStyles =
   "flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-sm font-medium text-slate-100 shadow-lg shadow-black/30 transition hover:-translate-y-0.5 hover:border-white/30 hover:bg-white/15 active:translate-y-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400";
 
 
-const tampermonkeyScript = "// ==UserScript==\n// @name         ChatGPT Copy Clean (tables + math)\n// @match        https://chatgpt.com/*\n// @grant        GM_setClipboard\n// ==/UserScript==\n(function () {\n  const stripZeroWidth = (text) =\u003e\n    text.replace(/[\\u200B\\u200C\\u200D\\u2060\\uFEFF\\u00AD\\u202A-\\u202E\\u2066-\\u2069]/g, \"\");\n\n  const escapePipes = (text) =\u003e\n    text.replace(/\\|/g, (m, offset, str) =\u003e\n      offset \u003e 0 \u0026\u0026 str[offset - 1] === \"\\\\\" ? \"|\" : \"\\\\|\",\n    );\n\n  const normalizeMatrixRows = (tex) =\u003e {\n    if (!/\\\\begin\\{(bmatrix|pmatrix|matrix|aligned|align\\*?|cases|array)\\}/.test(tex)) {\n      return tex;\n    }\n    return tex.replace(/(?\u003c!\\\\)\\\\\\\\s*(?=[0-9+\\-\\s\\]])/g, \"\\\\\\\\\");\n  };\n\n  const flattenMath = (tex) =\u003e\n    tex\n      .replace(/\\r\\n?/g, \"\\n\")\n      .split(\"\\n\")\n      .map((l) =\u003e l.trim())\n      .filter(Boolean)\n      .join(\" \");\n\n  const wrapMath = (tex, displayHint) =\u003e {\n    let body = normalizeMatrixRows(tex);\n    body = flattenMath(body);\n\n    const wantsDisplay =\n      displayHint ||\n      /\\\\begin\\{[^}]+\\}/.test(body) ||\n      /\\\\end\\{[^}]+\\}/.test(body);\n\n    if (wantsDisplay) return `\\n\\n$$\\n${body}\\n$$\\n\\n`;\n    return `$${body}$`;\n  };\n\n  const isNoise = (el) =\u003e {\n    const tag = el.tagName.toLowerCase();\n    if (tag === \"button\") return true;\n    const aria = (el.getAttribute(\"aria-label\") || \"\").toLowerCase();\n    if (aria.includes(\"copy code\")) return true;\n    const testId = (el.getAttribute(\"data-testid\") || \"\").toLowerCase();\n    if (testId.includes(\"copy\") \u0026\u0026 testId.includes(\"code\")) return true;\n    return false;\n  };\n\n  const renderTable = (tableEl) =\u003e {\n    const rows = Array.from(tableEl.querySelectorAll(\"tr\"));\n    if (!rows.length) return \"\";\n\n    const headerRow = tableEl.querySelector(\"thead tr\") || rows[0];\n    const headerCells = Array.from(headerRow.querySelectorAll(\"th, td\"));\n    if (!headerCells.length) return \"\";\n\n    const colCount = headerCells.length;\n    const bodyRows =\n      headerRow === rows[0] ? rows.slice(1) : rows.filter((r) =\u003e r !== headerRow);\n\n    const renderCell = (cell) =\u003e {\n      const walkCell = (node) =\u003e {\n        if (node.nodeType === Node.TEXT_NODE) {\n          return stripZeroWidth(node.textContent || \"\");\n        }\n        if (node.nodeType !== Node.ELEMENT_NODE) return \"\";\n        const el = node;\n\n        if (el.classList.contains(\"katex\") || el.classList.contains(\"katex-display\")) {\n          const ann = el.querySelector(\u0027annotation[encoding=\"application/x-tex\"]\u0027);\n          const tex = ann ? ann.textContent.trim() : (el.textContent || \"\").trim();\n          const display = el.classList.contains(\"katex-display\");\n          return wrapMath(tex, display);\n        }\n\n        const tag = el.tagName.toLowerCase();\n        if (tag === \"br\") return \"\\n\";\n\n        return Array.from(el.childNodes).map(walkCell).join(\"\");\n      };\n\n      const raw = Array.from(cell.childNodes).map(walkCell).join(\"\");\n      let text = raw\n        .replace(/\\n\\s*\\$\\$\\s*\\n([\\s\\S]*?)\\n\\s*\\$\\$\\s*\\n/g, (_, math) =\u003e `$${String(math).trim()}$`)\n        .replace(/\\n+/g, \" \")\n        .trim();\n\n      text = escapePipes(text);\n      return text.length ? text : \" \";\n    };\n\n    const buildRow = (cells) =\u003e {\n      const values = [];\n      for (let i = 0; i \u003c colCount; i += 1) {\n        values.push(cells[i] ? renderCell(cells[i]) : \" \");\n      }\n      return `| ${values.join(\" | \")} |`;\n    };\n\n    const headerLine = buildRow(headerCells);\n    const separator = `| ${Array(colCount).fill(\"---\").join(\" | \")} |`;\n    const bodyLines = bodyRows\n      .map((row) =\u003e buildRow(Array.from(row.querySelectorAll(\"th, td\"))))\n      .join(\"\\n\");\n\n    return `\\n\\n${headerLine}\\n${separator}${bodyLines ? `\\n${bodyLines}` : \"\"}\\n\\n`;\n  };\n\n  const htmlToMarkdown = (root) =\u003e {\n    const out = [];\n    const walk = (node) =\u003e {\n      if (node.nodeType === Node.TEXT_NODE) {\n        out.push(stripZeroWidth(node.textContent || \"\"));\n        return;\n      }\n      if (node.nodeType !== Node.ELEMENT_NODE) return;\n      const el = node;\n\n      if (isNoise(el)) return;\n\n      if (el.classList.contains(\"katex\") || el.classList.contains(\"katex-display\")) {\n        const ann = el.querySelector(\u0027annotation[encoding=\"application/x-tex\"]\u0027);\n        const tex = ann ? ann.textContent.trim() : (el.textContent || \"\").trim();\n        const display = el.classList.contains(\"katex-display\");\n        out.push(wrapMath(tex, display));\n        return;\n      }\n\n      const tag = el.tagName.toLowerCase();\n      if (tag === \"table\") {\n        out.push(renderTable(el));\n        return;\n      }\n      if (tag === \"pre\") {\n        const code = el.textContent || \"\";\n        out.push(`\\n\\n\\`\\`\\`\\n${code.replace(/\\n$/, \"\")}\\n\\`\\`\\`\\n\\n`);\n        return;\n      }\n      if (tag === \"br\") {\n        out.push(\"\\n\");\n        return;\n      }\n\n      const children = Array.from(el.childNodes);\n      children.forEach(walk);\n\n      if (tag === \"p\" || tag === \"div\") out.push(\"\\n\\n\");\n      if (/^h[1-6]$/.test(tag)) out.push(\"\\n\\n\");\n    };\n\n    walk(root);\n    return out.join(\"\").replace(/\\n{3,}/g, \"\\n\\n\").trim();\n  };\n\n  const addButtons = () =\u003e {\n    document.querySelectorAll(\u0027[data-message-id]\u0027).forEach((msg) =\u003e {\n      if (msg.querySelector(\u0027.copy-clean-btn\u0027)) return;\n      const btn = document.createElement(\u0027button\u0027);\n      btn.textContent = \u0027Copy clean\u0027;\n      btn.className = \u0027copy-clean-btn\u0027;\n      btn.style.marginLeft = \u00278px\u0027;\n      btn.onclick = () =\u003e copyClean(msg);\n      const toolbar = msg.querySelector(\u0027[data-testid=\"toolbox\"]\u0027) || msg;\n      toolbar.appendChild(btn);\n    });\n  };\n\n  const copyClean = (msg) =\u003e {\n    const html = msg.innerHTML;\n    const div = document.createElement(\u0027div\u0027);\n    div.innerHTML = html;\n\n    const md = htmlToMarkdown(div);\n    GM_setClipboard(md, \u0027text\u0027);\n    alert(\u0027Copied clean\u0027);\n  };\n\n  setInterval(addButtons, 1000);\n})();";
+const tampermonkeyScript = "// ==UserScript==\n// @name         ChatGPT Copy Clean (tables + math)\n// @match        https://chatgpt.com/*\n// @grant        GM_setClipboard\n// ==/UserScript==\n(function () {\n  const stripZeroWidth = (text) =>\n    text.replace(/[\\u200B\\u200C\\u200D\\u2060-\\u2064\\uFEFF\\u00AD\\u202A-\\u202E\\u2066-\\u2069]/g, \"\");\n\n  const escapePipes = (text) =>\n    text.replace(/\\|/g, (m, offset, str) =>\n      offset > 0 && str[offset - 1] === \"\\\\\" ? \"|\" : \"\\\\|\",\n    );\n\n  const normalizeMatrixRows = (tex) => {\n    if (!/\\\\begin\\{(bmatrix|pmatrix|matrix|aligned|align\\*?|cases|array)\\}/.test(tex)) {\n      return tex;\n    }\n    return tex.replace(/(?<!\\\\)\\\\\\s*(?=[0-9+\\-\\s\\]])/g, \"\\\\\\\\\");\n  };\n\n  const flattenMath = (tex) =>\n    tex\n      .replace(/\\r\\n?/g, \"\\n\")\n      .split(\"\\n\")\n      .map((l) => l.trim())\n      .filter(Boolean)\n      .join(\" \");\n\n  const wrapMath = (tex, displayHint) => {\n    let body = normalizeMatrixRows(tex);\n    body = flattenMath(body);\n\n    const wantsDisplay =\n      displayHint ||\n      /\\\\begin\\{[^}]+\\}/.test(body) ||\n      /\\\\end\\{[^}]+\\}/.test(body);\n\n    if (wantsDisplay) return `\\n\\n$$\\n${body}\\n$$\\n\\n`;\n    return `$${body}$`;\n  };\n\n  const isNoise = (el) => {\n    const tag = el.tagName.toLowerCase();\n    if (tag === \"button\") return true;\n    const aria = (el.getAttribute(\"aria-label\") || \"\").toLowerCase();\n    if (aria.includes(\"copy code\") || aria.includes(\"copia codice\")) return true;\n    const testId = (el.getAttribute(\"data-testid\") || \"\").toLowerCase();\n    if (testId.includes(\"copy\") && testId.includes(\"code\")) return true;\n    return false;\n  };\n\n  const isMathContainer = (el) => {\n    const tag = el.tagName.toLowerCase();\n    if (tag === \"math\") return true;\n    if (tag === \"mjx-container\" || tag === \"mjx-assistive-mml\") return true;\n    if (tag === \"script\" && /^math\\/tex/i.test(el.getAttribute(\"type\") || \"\")) return true;\n    if (tag === \"img\" && el.getAttribute(\"alt\")) return true;\n    if (el.classList.contains(\"katex-display\") || el.classList.contains(\"katex\")) return true;\n    if (el.classList.contains(\"MathJax\")) return true;\n    return false;\n  };\n\n  const getStyleValue = (el, prop) => {\n    const style = (el.getAttribute(\"style\") || \"\").toLowerCase();\n    const match = style.match(new RegExp(`${prop}\\\\s*:\\\\s*([^;]+)`));\n    return match ? match[1].trim() : \"\";\n  };\n\n  const hasClass = (el, re) => re.test((el.getAttribute(\"class\") || \"\").toLowerCase());\n\n  const isBoldLike = (el) => {\n    const weight = getStyleValue(el, \"font-weight\");\n    if (weight) {\n      if (weight.includes(\"bold\") || weight.includes(\"bolder\")) return true;\n      const num = Number.parseInt(weight, 10);\n      if (Number.isFinite(num) && num >= 600) return true;\n    }\n    return hasClass(el, /(^|\\s)(font-bold|font-semibold|fw-bold|bold)(\\s|$)/);\n  };\n\n  const isItalicLike = (el) => {\n    const style = getStyleValue(el, \"font-style\");\n    if (style && /italic|oblique/.test(style)) return true;\n    return hasClass(el, /(^|\\s)(italic|font-italic|is-italic)(\\s|$)/);\n  };\n\n  const extractTex = (el) => {\n    const tag = el.tagName.toLowerCase();\n    const ann = el.querySelector('annotation[encoding=\"application/x-tex\"]');\n    if (ann && ann.textContent) return ann.textContent.trim();\n    if (tag === \"script\") return el.textContent || \"\";\n    if (tag === \"img\") return el.getAttribute(\"alt\") || \"\";\n    return (el.textContent || \"\").trim();\n  };\n\n  const renderMath = (el) => {\n    const tex = extractTex(el);\n    if (!tex) return \"\";\n    const display =\n      el.classList.contains(\"katex-display\") ||\n      el.closest(\".katex-display\") ||\n      el.getAttribute(\"display\") === \"block\";\n    return wrapMath(tex, display);\n  };\n\n  const formatListItem = (prefix, raw) => {\n    const normalized = raw.replace(/\\r\\n?/g, \"\\n\").trimEnd();\n    const lines = normalized.split(\"\\n\");\n\n    while (lines.length && !lines[0].trim()) lines.shift();\n    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();\n\n    if (!lines.length) return prefix.trimEnd();\n\n    const first = (lines.shift() || \"\").trim();\n    if (!lines.length) return `${prefix}${first}`.trimEnd();\n\n    const rest = lines\n      .map((line) => (line.length ? `  ${line}` : \"\"))\n      .join(\"\\n\");\n\n    return `${prefix}${first}\\n${rest}`.trimEnd();\n  };\n\n  const renderInline = (node, marks = {}) => {\n    if (node.nodeType === Node.TEXT_NODE) {\n      return stripZeroWidth(node.textContent || \"\");\n    }\n    if (node.nodeType !== Node.ELEMENT_NODE) return \"\";\n    const el = node;\n\n    if (isNoise(el)) return \"\";\n    if (isMathContainer(el)) return renderMath(el);\n\n    const tag = el.tagName.toLowerCase();\n    if (tag === \"br\") return \"\\n\";\n    if (tag === \"ul\" || tag === \"ol\") return \"\";\n\n    const bold = tag === \"strong\" || tag === \"b\" || isBoldLike(el);\n    const italics = tag === \"em\" || tag === \"i\" || isItalicLike(el);\n    const code = tag === \"code\";\n\n    const nextMarks = {\n      bold: marks.bold || bold,\n      italics: marks.italics || italics,\n      code: marks.code || code,\n    };\n\n    const content = Array.from(el.childNodes)\n      .map((child) => renderInline(child, nextMarks))\n      .join(\"\");\n\n    if (!content) return \"\";\n\n    let out = content;\n    if (code && !marks.code) out = \"`\" + out + \"`\";\n    if (bold && !marks.bold && italics && !marks.italics) {\n      out = `***${out}***`;\n    } else {\n      if (bold && !marks.bold) out = `**${out}**`;\n      if (italics && !marks.italics) out = `*${out}*`;\n    }\n\n    return out;\n  };\n\n  const renderTable = (tableEl) => {\n    const rows = Array.from(tableEl.querySelectorAll(\"tr\"));\n    if (!rows.length) return \"\";\n\n    const headerRow = tableEl.querySelector(\"thead tr\") || rows[0];\n    const headerCells = Array.from(headerRow.querySelectorAll(\"th, td\"));\n    if (!headerCells.length) return \"\";\n\n    const colCount = headerCells.length;\n    const bodyRows =\n      headerRow === rows[0] ? rows.slice(1) : rows.filter((r) => r !== headerRow);\n\n    const renderCell = (cell) => {\n      const raw = Array.from(cell.childNodes)\n        .map((child) => renderInline(child))\n        .join(\"\");\n      let text = raw\n        .replace(/\\n\\s*\\$\\$\\s*\\n([\\s\\S]*?)\\n\\s*\\$\\$\\s*\\n/g, (_, math) => `$${String(math).trim()}$`)\n        .replace(/\\n+/g, \" \")\n        .trim();\n\n      text = escapePipes(text);\n      return text.length ? text : \" \";\n    };\n\n    const buildRow = (cells) => {\n      const values = [];\n      for (let i = 0; i < colCount; i += 1) {\n        values.push(cells[i] ? renderCell(cells[i]) : \" \");\n      }\n      return `| ${values.join(\" | \")} |`;\n    };\n\n    const headerLine = buildRow(headerCells);\n    const separator = `| ${Array(colCount).fill(\"---\").join(\" | \")} |`;\n    const bodyLines = bodyRows\n      .map((row) => buildRow(Array.from(row.querySelectorAll(\"th, td\"))))\n      .join(\"\\n\");\n\n    return `\\n\\n${headerLine}\\n${separator}${bodyLines ? `\\n${bodyLines}` : \"\"}\\n\\n`;\n  };\n\n  const renderBlock = (node) => {\n    if (node.nodeType === Node.TEXT_NODE) {\n      const text = stripZeroWidth(node.textContent || \"\");\n      return text.trim().length ? text : \"\";\n    }\n    if (node.nodeType !== Node.ELEMENT_NODE) return \"\";\n    const el = node;\n\n    if (isNoise(el)) return \"\";\n    if (isMathContainer(el)) return `${renderMath(el)}\\n\\n`;\n\n    const tag = el.tagName.toLowerCase();\n\n    if (tag === \"br\") return \"\\n\";\n\n    if (tag === \"pre\") {\n      const code = el.textContent || \"\";\n      return `\\n\\n\\`\\`\\`\\n${code.replace(/\\n$/, \"\")}\\n\\`\\`\\`\\n\\n`;\n    }\n\n    if (tag === \"table\") return renderTable(el);\n\n    if (tag === \"ul\" || tag === \"ol\") {\n      const ordered = tag === \"ol\";\n      const items = Array.from(el.children).filter(\n        (child) => child.tagName.toLowerCase() === \"li\",\n      );\n\n      const lines = items\n        .map((li, idx) => {\n          const prefix = ordered ? `${idx + 1}. ` : \"- \";\n          const body = renderInline(li).trimEnd();\n          const nestedLists = Array.from(li.children).filter((c) =>\n            [\"ul\", \"ol\"].includes(c.tagName.toLowerCase()),\n          );\n          const nestedText = nestedLists\n            .map((nested) => renderBlock(nested).trimEnd())\n            .filter(Boolean)\n            .join(\"\\n\");\n\n          const combined = nestedText ? `${body}\\n\\n${nestedText}` : body;\n          return formatListItem(prefix, combined);\n        })\n        .join(\"\\n\");\n\n      return `${lines}\\n\\n`;\n    }\n\n    if (tag === \"li\") {\n      const content = renderInline(el);\n      return `${formatListItem(\"- \", content)}\\n`;\n    }\n\n    if (/^h[1-6]$/.test(tag)) {\n      const level = Number.parseInt(tag.slice(1), 10);\n      const hashes = \"#\".repeat(Math.max(1, Math.min(6, level)));\n      const text = renderInline(el).replace(/\\n+/g, \" \").trim();\n      return text ? `${hashes} ${text}\\n\\n` : \"\";\n    }\n\n    if (tag === \"p\") {\n      const text = renderInline(el).trim();\n      return text ? `${text}\\n\\n` : \"\";\n    }\n\n    if (tag === \"div\" || tag === \"section\" || tag === \"article\") {\n      const content = Array.from(el.childNodes)\n        .map((child) => renderBlock(child))\n        .join(\"\")\n        .trim();\n      return content ? `${content}\\n\\n` : \"\";\n    }\n\n    const content = Array.from(el.childNodes).map((child) => renderBlock(child)).join(\"\");\n    return content;\n  };\n\n  const htmlToMarkdown = (root) => {\n    const output = Array.from(root.childNodes)\n      .map((node) => renderBlock(node))\n      .join(\"\")\n      .replace(/\\r\\n?/g, \"\\n\")\n      .replace(/[ \\t]+\\n/g, \"\\n\")\n      .replace(/\\n{3,}/g, \"\\n\\n\")\n      .trim();\n\n    return output;\n  };\n\n  const addButtons = () => {\n    document.querySelectorAll('[data-message-id]').forEach((msg) => {\n      if (msg.querySelector('.copy-clean-btn')) return;\n      const btn = document.createElement('button');\n      btn.textContent = 'Copy clean';\n      btn.className = 'copy-clean-btn';\n      btn.style.marginLeft = '8px';\n      btn.onclick = () => copyClean(msg);\n      const toolbar = msg.querySelector('[data-testid=\"toolbox\"]') || msg;\n      toolbar.appendChild(btn);\n    });\n  };\n\n  const copyClean = (msg) => {\n    const html = msg.innerHTML;\n    const div = document.createElement('div');\n    div.innerHTML = html;\n\n    const md = htmlToMarkdown(div);\n    GM_setClipboard(md, 'text');\n    alert('Copied clean');\n  };\n\n  setInterval(addButtons, 1000);\n})();\n";
 
 export default function Home() {
   const previewRef = useRef<HTMLDivElement>(null);
@@ -1937,7 +2143,7 @@ export default function Home() {
   const [autoFix, setAutoFix] = useState(true);
   const [copyMode, setCopyMode] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"docx" | "pdf" | null>(null);
+  const [busy, setBusy] = useState<"docx" | "docx-pandoc" | "pdf" | null>(null);
 
   useEffect(() => {
     if (!status) return;
@@ -2232,6 +2438,37 @@ export default function Home() {
     }
   };
 
+  const exportDocxPandoc = async () => {
+    setBusy("docx-pandoc");
+    setStatus("Generating DOCX (Pandoc)...");
+    try {
+      const content = renderedMarkdown.trim();
+      const response = await fetch("/api/docx-pandoc", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ markdown: content }),
+      });
+      if (!response.ok) {
+        let message = "Docx Pandoc API error";
+        try {
+          const data = await response.json();
+          if (data?.error) message = String(data.error);
+        } catch {
+          // ignore json parse failures
+        }
+        throw new Error(message);
+      }
+      const blob = await response.blob();
+      downloadBlob(blob, "promptpress-export-pandoc.docx");
+      setStatus("DOCX (Pandoc) exported");
+    } catch (error) {
+      console.error(error);
+      setStatus(error instanceof Error ? error.message : "Error exporting DOCX (Pandoc)");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const exportPdf = async () => {
     if (!previewRef.current) return;
     setBusy("pdf");
@@ -2488,6 +2725,18 @@ export default function Home() {
                 )}
               >
                 {busy === "docx" ? "Exporting..." : "Export DOCX"}
+              </button>
+              <button
+                type="button"
+                onClick={exportDocxPandoc}
+                disabled={busy === "docx-pandoc"}
+                className={clsx(
+                  buttonStyles,
+                  "bg-indigo-500/20 px-5",
+                  busy === "docx-pandoc" && "cursor-not-allowed opacity-60",
+                )}
+              >
+                {busy === "docx-pandoc" ? "Exporting..." : "Export DOCX (Pandoc)"}
               </button>
               <button
                 type="button"

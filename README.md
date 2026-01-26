@@ -41,7 +41,7 @@ Open `http://localhost:3000`.
 // ==/UserScript==
 (function () {
   const stripZeroWidth = (text) =>
-    text.replace(/[\u200B\u200C\u200D\u2060\uFEFF\u00AD\u202A-\u202E\u2066-\u2069]/g, "");
+    text.replace(/[\u200B\u200C\u200D\u2060-\u2064\uFEFF\u00AD\u202A-\u202E\u2066-\u2069]/g, "");
 
   const escapePipes = (text) =>
     text.replace(/\|/g, (m, offset, str) =>
@@ -86,6 +86,121 @@ Open `http://localhost:3000`.
     return false;
   };
 
+  const isMathContainer = (el) => {
+    const tag = el.tagName.toLowerCase();
+    if (tag === "math") return true;
+    if (tag === "mjx-container" || tag === "mjx-assistive-mml") return true;
+    if (tag === "script" && /^math\/tex/i.test(el.getAttribute("type") || "")) return true;
+    if (tag === "img" && el.getAttribute("alt")) return true;
+    if (el.classList.contains("katex-display") || el.classList.contains("katex")) return true;
+    if (el.classList.contains("MathJax")) return true;
+    return false;
+  };
+
+  const getStyleValue = (el, prop) => {
+    const style = (el.getAttribute("style") || "").toLowerCase();
+    const match = style.match(new RegExp(`${prop}\\s*:\\s*([^;]+)`));
+    return match ? match[1].trim() : "";
+  };
+
+  const hasClass = (el, re) => re.test((el.getAttribute("class") || "").toLowerCase());
+
+  const isBoldLike = (el) => {
+    const weight = getStyleValue(el, "font-weight");
+    if (weight) {
+      if (weight.includes("bold") || weight.includes("bolder")) return true;
+      const num = Number.parseInt(weight, 10);
+      if (Number.isFinite(num) && num >= 600) return true;
+    }
+    return hasClass(el, /(^|\s)(font-bold|font-semibold|fw-bold|bold)(\s|$)/);
+  };
+
+  const isItalicLike = (el) => {
+    const style = getStyleValue(el, "font-style");
+    if (style && /italic|oblique/.test(style)) return true;
+    return hasClass(el, /(^|\s)(italic|font-italic|is-italic)(\s|$)/);
+  };
+
+  const extractTex = (el) => {
+    const tag = el.tagName.toLowerCase();
+    const ann = el.querySelector('annotation[encoding="application/x-tex"]');
+    if (ann && ann.textContent) return ann.textContent.trim();
+    if (tag === "script") return el.textContent || "";
+    if (tag === "img") return el.getAttribute("alt") || "";
+    return (el.textContent || "").trim();
+  };
+
+  const renderMath = (el) => {
+    const tex = extractTex(el);
+    if (!tex) return "";
+    const display =
+      el.classList.contains("katex-display") ||
+      el.closest(".katex-display") ||
+      el.getAttribute("display") === "block";
+    return wrapMath(tex, display);
+  };
+
+  const formatListItem = (prefix, raw) => {
+    const normalized = raw.replace(/\r\n?/g, "\n").trimEnd();
+    const lines = normalized.split("\n");
+
+    while (lines.length && !lines[0].trim()) lines.shift();
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+
+    if (!lines.length) return prefix.trimEnd();
+
+    const first = (lines.shift() || "").trim();
+    if (!lines.length) return `${prefix}${first}`.trimEnd();
+
+    const rest = lines
+      .map((line) => (line.length ? `  ${line}` : ""))
+      .join("\n");
+
+    return `${prefix}${first}\n${rest}`.trimEnd();
+  };
+
+  const renderInline = (node, marks = {}) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return stripZeroWidth(node.textContent || "");
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+    const el = node;
+
+    if (isNoise(el)) return "";
+    if (isMathContainer(el)) return renderMath(el);
+
+    const tag = el.tagName.toLowerCase();
+    if (tag === "br") return "\n";
+    if (tag === "ul" || tag === "ol") return "";
+
+    const bold = tag === "strong" || tag === "b" || isBoldLike(el);
+    const italics = tag === "em" || tag === "i" || isItalicLike(el);
+    const code = tag === "code";
+
+    const nextMarks = {
+      bold: marks.bold || bold,
+      italics: marks.italics || italics,
+      code: marks.code || code,
+    };
+
+    const content = Array.from(el.childNodes)
+      .map((child) => renderInline(child, nextMarks))
+      .join("");
+
+    if (!content) return "";
+
+    let out = content;
+    if (code && !marks.code) out = "`" + out + "`";
+    if (bold && !marks.bold && italics && !marks.italics) {
+      out = `***${out}***`;
+    } else {
+      if (bold && !marks.bold) out = `**${out}**`;
+      if (italics && !marks.italics) out = `*${out}*`;
+    }
+
+    return out;
+  };
+
   const renderTable = (tableEl) => {
     const rows = Array.from(tableEl.querySelectorAll("tr"));
     if (!rows.length) return "";
@@ -99,27 +214,9 @@ Open `http://localhost:3000`.
       headerRow === rows[0] ? rows.slice(1) : rows.filter((r) => r !== headerRow);
 
     const renderCell = (cell) => {
-      const walkCell = (node) => {
-        if (node.nodeType === Node.TEXT_NODE) {
-          return stripZeroWidth(node.textContent || "");
-        }
-        if (node.nodeType !== Node.ELEMENT_NODE) return "";
-        const el = node;
-
-        if (el.classList.contains("katex") || el.classList.contains("katex-display")) {
-          const ann = el.querySelector('annotation[encoding="application/x-tex"]');
-          const tex = ann ? ann.textContent.trim() : (el.textContent || "").trim();
-          const display = el.classList.contains("katex-display");
-          return wrapMath(tex, display);
-        }
-
-        const tag = el.tagName.toLowerCase();
-        if (tag === "br") return "\n";
-
-        return Array.from(el.childNodes).map(walkCell).join("");
-      };
-
-      const raw = Array.from(cell.childNodes).map(walkCell).join("");
+      const raw = Array.from(cell.childNodes)
+        .map((child) => renderInline(child))
+        .join("");
       let text = raw
         .replace(/\n\s*\$\$\s*\n([\s\S]*?)\n\s*\$\$\s*\n/g, (_, math) => `$${String(math).trim()}$`)
         .replace(/\n+/g, " ")
@@ -146,50 +243,93 @@ Open `http://localhost:3000`.
     return `\n\n${headerLine}\n${separator}${bodyLines ? `\n${bodyLines}` : ""}\n\n`;
   };
 
+  const renderBlock = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = stripZeroWidth(node.textContent || "");
+      return text.trim().length ? text : "";
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+    const el = node;
+
+    if (isNoise(el)) return "";
+    if (isMathContainer(el)) return `${renderMath(el)}\n\n`;
+
+    const tag = el.tagName.toLowerCase();
+
+    if (tag === "br") return "\n";
+
+    if (tag === "pre") {
+      const code = el.textContent || "";
+      return `\n\n\`\`\`\n${code.replace(/\n$/, "")}\n\`\`\`\n\n`;
+    }
+
+    if (tag === "table") return renderTable(el);
+
+    if (tag === "ul" || tag === "ol") {
+      const ordered = tag === "ol";
+      const items = Array.from(el.children).filter(
+        (child) => child.tagName.toLowerCase() === "li",
+      );
+
+      const lines = items
+        .map((li, idx) => {
+          const prefix = ordered ? `${idx + 1}. ` : "- ";
+          const body = renderInline(li).trimEnd();
+          const nestedLists = Array.from(li.children).filter((c) =>
+            ["ul", "ol"].includes(c.tagName.toLowerCase()),
+          );
+          const nestedText = nestedLists
+            .map((nested) => renderBlock(nested).trimEnd())
+            .filter(Boolean)
+            .join("\n");
+
+          const combined = nestedText ? `${body}\n\n${nestedText}` : body;
+          return formatListItem(prefix, combined);
+        })
+        .join("\n");
+
+      return `${lines}\n\n`;
+    }
+
+    if (tag === "li") {
+      const content = renderInline(el);
+      return `${formatListItem("- ", content)}\n`;
+    }
+
+    if (/^h[1-6]$/.test(tag)) {
+      const level = Number.parseInt(tag.slice(1), 10);
+      const hashes = "#".repeat(Math.max(1, Math.min(6, level)));
+      const text = renderInline(el).replace(/\n+/g, " ").trim();
+      return text ? `${hashes} ${text}\n\n` : "";
+    }
+
+    if (tag === "p") {
+      const text = renderInline(el).trim();
+      return text ? `${text}\n\n` : "";
+    }
+
+    if (tag === "div" || tag === "section" || tag === "article") {
+      const content = Array.from(el.childNodes)
+        .map((child) => renderBlock(child))
+        .join("")
+        .trim();
+      return content ? `${content}\n\n` : "";
+    }
+
+    const content = Array.from(el.childNodes).map((child) => renderBlock(child)).join("");
+    return content;
+  };
+
   const htmlToMarkdown = (root) => {
-    const out = [];
-    const walk = (node) => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        out.push(stripZeroWidth(node.textContent || ""));
-        return;
-      }
-      if (node.nodeType !== Node.ELEMENT_NODE) return;
-      const el = node;
+    const output = Array.from(root.childNodes)
+      .map((node) => renderBlock(node))
+      .join("")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
 
-      if (isNoise(el)) return;
-
-      if (el.classList.contains("katex") || el.classList.contains("katex-display")) {
-        const ann = el.querySelector('annotation[encoding="application/x-tex"]');
-        const tex = ann ? ann.textContent.trim() : (el.textContent || "").trim();
-        const display = el.classList.contains("katex-display");
-        out.push(wrapMath(tex, display));
-        return;
-      }
-
-      const tag = el.tagName.toLowerCase();
-      if (tag === "table") {
-        out.push(renderTable(el));
-        return;
-      }
-      if (tag === "pre") {
-        const code = el.textContent || "";
-        out.push(`\n\n\`\`\`\n${code.replace(/\n$/, "")}\n\`\`\`\n\n`);
-        return;
-      }
-      if (tag === "br") {
-        out.push("\n");
-        return;
-      }
-
-      const children = Array.from(el.childNodes);
-      children.forEach(walk);
-
-      if (tag === "p" || tag === "div") out.push("\n\n");
-      if (/^h[1-6]$/.test(tag)) out.push("\n\n");
-    };
-
-    walk(root);
-    return out.join("").replace(/\n{3,}/g, "\n\n").trim();
+    return output;
   };
 
   const addButtons = () => {
@@ -212,8 +352,9 @@ Open `http://localhost:3000`.
 
     const md = htmlToMarkdown(div);
     GM_setClipboard(md, 'text');
-    alert('Copiato pulito');
+    alert('Copied clean');
   };
 
   setInterval(addButtons, 1000);
 })();
+```

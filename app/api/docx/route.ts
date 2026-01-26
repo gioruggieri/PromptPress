@@ -20,6 +20,7 @@ import { parse, type HTMLElement, type Node as HtmlNode } from "node-html-parser
 import katex from "katex";
 import JSZip from "jszip";
 import { mml2omml } from "mathml2omml";
+import { MathMLToLaTeX } from "mathml-to-latex";
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 
 type XmlDoc = globalThis.Document;
@@ -40,14 +41,28 @@ type BlockContext = {
 };
 
 const M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math";
+const DOCX_MATH_DEBUG = process.env.DOCX_MATH_DEBUG === "1";
 
 /* --------------------------------- helpers -------------------------------- */
 
 const stripZeroWidth = (value: string) =>
   value.replace(
-    /[\u200B\u200C\u200D\u2060\uFEFF\u00AD\u202A-\u202E\u2066-\u2069]/g,
+    /[\u200B\u200C\u200D\u2060-\u2064\uFEFF\u00AD\u202A-\u202E\u2066-\u2069]/g,
     "",
   );
+
+const debugSample = (value?: string | null, limit = 240) => {
+  if (!value) return "";
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (!compact) return "";
+  return compact.length > limit ? `${compact.slice(0, limit)}...` : compact;
+};
+
+const logDocxMathDebug = (label: string, payload: Record<string, unknown>) => {
+  if (!DOCX_MATH_DEBUG) return;
+  // eslint-disable-next-line no-console
+  console.warn("DOCX_MATH_DEBUG", label, payload);
+};
 
 const stripUnpairedSurrogates = (value: string) => {
   let out = "";
@@ -102,6 +117,16 @@ const extractLatexFromKatex = (el: HTMLElement) => {
   const texFromAnnotation = annotation?.textContent?.trim();
   if (texFromAnnotation) return texFromAnnotation;
 
+  const math = el.querySelector("math");
+  if (math) {
+    try {
+      const texFromMathMl = MathMLToLaTeX.convert(math.toString());
+      if (texFromMathMl) return texFromMathMl.trim();
+    } catch {
+      // ignore conversion failures
+    }
+  }
+
   const fromTitle = el.getAttribute("title")?.trim();
   if (fromTitle && fromTitle.includes("\\") && fromTitle.length < 5000) {
     if (!/^ParseError:/i.test(fromTitle)) return fromTitle;
@@ -109,6 +134,15 @@ const extractLatexFromKatex = (el: HTMLElement) => {
 
   const text = el.textContent?.trim();
   return text && text.includes("\\") ? text : null;
+};
+
+const extractTextFromKatex = (el: HTMLElement) => {
+  const htmlText = el.querySelector(".katex-html")?.textContent?.trim();
+  if (htmlText) return htmlText;
+  const mathmlText = el.querySelector(".katex-mathml")?.textContent?.trim();
+  if (mathmlText) return mathmlText;
+  const text = el.textContent?.trim();
+  return text || null;
 };
 
 const texToMathMl = (tex: string, displayMode: boolean) => {
@@ -122,6 +156,10 @@ const texToMathMl = (tex: string, displayMode: boolean) => {
     const match = rendered.match(/<math[\s\S]*?<\/math>/i);
     return match ? match[0] : null;
   } catch {
+    logDocxMathDebug("tex-to-mathml:fail", {
+      displayMode,
+      tex: debugSample(tex),
+    });
     return null;
   }
 };
@@ -220,8 +258,77 @@ const tryMathMlToOmml = (mathML: string) => {
 const stripLeftRight = (tex: string) =>
   tex.replace(/\\left/g, "").replace(/\\right/g, "");
 
+const normalizeDocxUnicodeMath = (tex: string) => {
+  let out = tex;
+  out = out.replace(/[\u2060-\u2064]/g, "");
+  out = out.replace(/[\u2591-\u2593]/g, "");
+  out = out.replace(/["\u201C\u201D]/g, "");
+  out = out.replace(/\u2212/g, "-");
+  out = out.replace(/\u2032/g, "'").replace(/\u2033/g, "''");
+  out = out.replace(/\u2223/g, "|").replace(/\u2225/g, "||");
+  out = out.replace(/_\(([^)]+)\)/g, "_{$1}");
+  out = out.replace(/\^\(([^)]+)\)/g, "^{$1}");
+  out = out.replace(/\^\s*['\u2032]/g, "'");
+  out = out.replace(/(\d+)\s*\/\s*(\|[^|]+\|)/g, "\\\\frac{$1}{$2}");
+  out = out.replace(/(\d+)\s*\/\s*(\u2223[^\u2223]+\u2223)/g, "\\\\frac{$1}{$2}");
+
+  const unicodeMap: Record<string, string> = {
+    "\u2211": "\\sum",
+    "\u2208": "\\in",
+    "\u2209": "\\notin",
+    "\u222A": "\\cup",
+    "\u2229": "\\cap",
+    "\u2260": "\\neq",
+    "\u2264": "\\leq",
+    "\u2265": "\\geq",
+    "\u2248": "\\approx",
+    "\u00D7": "\\times",
+    "\u00F7": "\\div",
+    "\u00B7": "\\cdot",
+    "\u2219": "\\cdot",
+    "\u22C5": "\\cdot",
+    "\u221E": "\\infty",
+    "\u221D": "\\propto",
+    "\u2202": "\\partial",
+    "\u2207": "\\nabla",
+    "\u2192": "\\to",
+    "\u2190": "\\leftarrow",
+    "\u2194": "\\leftrightarrow",
+    "\u21D2": "\\Rightarrow",
+    "\u21D0": "\\Leftarrow",
+    "\u21D4": "\\Leftrightarrow",
+    "\u03B1": "\\alpha",
+    "\u03B2": "\\beta",
+    "\u03B3": "\\gamma",
+    "\u03B4": "\\delta",
+    "\u03B5": "\\epsilon",
+    "\u03B8": "\\theta",
+    "\u03BB": "\\lambda",
+    "\u03BC": "\\mu",
+    "\u03C0": "\\pi",
+    "\u03C3": "\\sigma",
+    "\u03C6": "\\phi",
+    "\u03C9": "\\omega",
+    "\u0393": "\\Gamma",
+    "\u0394": "\\Delta",
+    "\u0398": "\\Theta",
+    "\u039B": "\\Lambda",
+    "\u03A0": "\\Pi",
+    "\u03A3": "\\Sigma",
+    "\u03A6": "\\Phi",
+    "\u03A9": "\\Omega",
+  };
+
+  out = out.replace(
+    /[\u2190-\u21FF\u2200-\u22FF\u0370-\u03FF]/g,
+    (match) => unicodeMap[match] ?? match,
+  );
+
+  return out.replace(/\s{2,}/g, " ").trim();
+};
+
 const normalizeDocxLatex = (tex: string) =>
-  tex
+  normalizeDocxUnicodeMath(tex)
     .replace(/\\displaystyle\s*/g, "")
     .replace(/\\left\\\{([\\s\\S]*?)\\right\\\./g, "\\left\\{$1\\right\\}")
     .replace(/\\bigl/g, "\\left")
@@ -1267,12 +1374,40 @@ const finalizeOmmlString = (omml: string) =>
     .replace(/\s+xmlns:w="[^"]+"/g, "")
     .trim();
 
+const tryTexToOmml = (tex: string, displayMode: boolean) => {
+  const normalized = normalizeDocxLatex(tex);
+  const hasFrac = /\\frac\s*\{/.test(normalized);
+
+  const regenerated = texToMathMl(normalized, displayMode);
+  if (regenerated) {
+    const omml = tryMathMlToOmml(regenerated);
+    if (omml && (!hasFrac || omml.includes("<m:f"))) return omml;
+  }
+
+  if (hasFrac) {
+    const stripped = stripLeftRight(normalized);
+    if (stripped != normalized) {
+      const regeneratedAlt = texToMathMl(stripped, displayMode);
+      if (regeneratedAlt) {
+        const ommlAlt = tryMathMlToOmml(regeneratedAlt);
+        if (ommlAlt) return ommlAlt;
+      }
+    }
+  }
+
+  return null;
+};
+
 const buildOmmlFromElement = (el: HTMLElement): string | null => {
   const displayMode =
     el.classList.contains("katex-display") ||
     el.querySelector("math")?.getAttribute("display") === "block";
 
   const tex = extractLatexFromKatex(el);
+  const debugBase = {
+    displayMode,
+    tex: debugSample(tex),
+  };
 
   const hasMatrixLike =
     !!tex && /\\begin\{(?:bmatrix|pmatrix|Bmatrix|vmatrix|Vmatrix|matrix|smallmatrix)\}/.test(tex);
@@ -1281,38 +1416,74 @@ const buildOmmlFromElement = (el: HTMLElement): string | null => {
 
   if (mathMLFromDom) {
     const omml = tryMathMlToOmml(mathMLFromDom);
-    if (omml) return omml;
+    if (omml) {
+      logDocxMathDebug("mathml-dom:ok", {
+        ...debugBase,
+        hasMatrixLike,
+        mathML: debugSample(mathMLFromDom),
+      });
+      return omml;
+    }
+    logDocxMathDebug("mathml-dom:fail", {
+      ...debugBase,
+      hasMatrixLike,
+      mathML: debugSample(mathMLFromDom),
+    });
   }
 
   if (tex) {
-    const normalized = normalizeDocxLatex(tex);
-    const hasFrac = /\\frac\s*\{/.test(tex);
-
-    const regenerated = texToMathMl(normalized, displayMode);
-    if (regenerated) {
-      const omml = tryMathMlToOmml(regenerated);
-      if (omml && (!hasFrac || omml.includes("<m:f"))) return omml;
+    const omml = tryTexToOmml(tex, displayMode);
+    if (omml) {
+      logDocxMathDebug("tex:ok", { ...debugBase, hasMatrixLike });
+      return omml;
     }
-
-    if (hasFrac) {
-      const stripped = stripLeftRight(normalized);
-      if (stripped != normalized) {
-        const regeneratedAlt = texToMathMl(stripped, displayMode);
-        if (regeneratedAlt) {
-          const ommlAlt = tryMathMlToOmml(regeneratedAlt);
-          if (ommlAlt) return ommlAlt;
-        }
-      }
-    }
+    logDocxMathDebug("tex:fail", { ...debugBase, hasMatrixLike });
   }
 
   const mathMLAny = extractMathMlFromKatex(el);
   if (mathMLAny && mathMLAny !== mathMLFromDom) {
     const omml = tryMathMlToOmml(mathMLAny);
-    if (omml) return omml;
+    if (omml) {
+      logDocxMathDebug("mathml-any:ok", {
+        ...debugBase,
+        hasMatrixLike,
+        mathML: debugSample(mathMLAny),
+      });
+      return omml;
+    }
+    logDocxMathDebug("mathml-any:fail", {
+      ...debugBase,
+      hasMatrixLike,
+      mathML: debugSample(mathMLAny),
+    });
   }
 
+  const textFallback = extractTextFromKatex(el);
+  if (textFallback && textFallback !== tex) {
+    const omml = tryTexToOmml(textFallback, displayMode);
+    if (omml) {
+      logDocxMathDebug("text:ok", {
+        ...debugBase,
+        hasMatrixLike,
+        text: debugSample(textFallback),
+      });
+      return omml;
+    }
+    logDocxMathDebug("text:fail", {
+      ...debugBase,
+      hasMatrixLike,
+      text: debugSample(textFallback),
+    });
+  }
+
+  logDocxMathDebug("omml:none", { ...debugBase, hasMatrixLike });
   return null;
+};
+
+const fallbackMathText = (el: HTMLElement) => {
+  const raw = extractLatexFromKatex(el) ?? extractTextFromKatex(el) ?? "";
+  const normalized = normalizeDocxUnicodeMath(raw);
+  return normalized.trim();
 };
 
 /* ------------------------------ DOC generation ----------------------------- */
@@ -1364,8 +1535,8 @@ const inlineFromNodes = (
       const placeholder = createMathPlaceholder(math, el);
       if (placeholder) out.push(placeholder);
       else {
-        const fallback = extractLatexFromKatex(el) ?? el.textContent ?? "";
-        if (fallback.trim()) out.push(textRunFromNode(fallback, { ...marks, code: true }));
+        const fallback = fallbackMathText(el);
+        if (fallback) out.push(textRunFromNode(fallback, { ...marks, code: true }));
       }
       continue;
     }
@@ -1456,8 +1627,8 @@ const blockFromNode = (
     const placeholder = createMathPlaceholder(math, el);
     if (placeholder) return [paragraphFromInline([placeholder])];
 
-    const fallback = extractLatexFromKatex(el) ?? el.textContent ?? "";
-    if (!fallback.trim()) return [];
+    const fallback = fallbackMathText(el);
+    if (!fallback) return [];
     return [paragraphFromInline([textRunFromNode(fallback, { code: true })])];
   }
 
