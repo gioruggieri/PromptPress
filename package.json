@@ -19,6 +19,7 @@
     "next": "16.0.10",
     "node-html-parser": "^7.0.1",
     "pandoc-bin": "^0.2.0",
+    "os-filter-obj": "^2.0.0",
     "puppeteer": "^24.20.0",
     "puppeteer-core": "^24.20.0",
     "react": "19.2.1",
