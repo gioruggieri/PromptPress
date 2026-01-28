@@ -57,13 +57,25 @@ const run = (cmd, args, options = {}) =>
     );
   });
 
-const download = (url, dest) =>
+const download = (url, dest, redirects = 0) =>
   new Promise((resolve, reject) => {
     const stream = createWriteStream(dest);
     https
       .get(url, (res) => {
-        if (res.statusCode && res.statusCode >= 400) {
-          reject(new Error(`Download failed: ${res.statusCode}`));
+        const status = res.statusCode ?? 0;
+        const location = res.headers.location;
+        if (status >= 300 && status < 400 && location) {
+          if (redirects > 4) {
+            reject(new Error("Too many redirects"));
+            return;
+          }
+          stream.close(() => {
+            download(location, dest, redirects + 1).then(resolve).catch(reject);
+          });
+          return;
+        }
+        if (status >= 400) {
+          reject(new Error(`Download failed: ${status}`));
           return;
         }
         res.pipe(stream);
