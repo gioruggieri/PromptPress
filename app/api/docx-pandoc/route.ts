@@ -1,19 +1,22 @@
 import { NextResponse } from "next/server";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import pandocBin from "pandoc-bin";
 
 export const runtime = "nodejs";
-
-type PandocBin = { path?: string };
 
 const resolvePandocPath = () => {
   const envPath = process.env.PANDOC_PATH;
   if (envPath && envPath.trim()) return envPath.trim();
-  const fromPackage = (pandocBin as PandocBin | undefined)?.path;
-  return fromPackage || "pandoc";
+  const localBinary = path.join(
+    process.cwd(),
+    ".pandoc",
+    process.platform === "win32" ? "pandoc.exe" : "pandoc",
+  );
+  if (existsSync(localBinary)) return localBinary;
+  return "pandoc";
 };
 
 const runPandoc = async (markdown: string) => {
@@ -27,7 +30,7 @@ const runPandoc = async (markdown: string) => {
     const pandocPath = resolvePandocPath();
     const args = [
       "-f",
-      "markdown+tex_math_dollars+tex_math_single_backslash+pipe_tables+task_lists+strikeout+autolink_bare_uris",
+      "gfm+tex_math_dollars+pipe_tables+task_lists+strikeout+autolink_bare_uris",
       "-t",
       "docx",
       "-o",
@@ -83,7 +86,7 @@ export async function POST(request: Request) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code === "ENOENT") {
       message =
-        "Pandoc not found. Set PANDOC_PATH or install pandoc-bin/pandoc on the server.";
+        "Pandoc not found. Set PANDOC_PATH or provide a local .pandoc/pandoc binary.";
     }
     return NextResponse.json({ error: message }, { status: 500 });
   }

@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "postinstall": "node scripts/install-pandoc.mjs",
     "start": "next start",
     "lint": "eslint ."
   },
@@ -18,8 +19,6 @@
     "mathml2omml": "^0.5.0",
     "next": "16.0.10",
     "node-html-parser": "^7.0.1",
-    "pandoc-bin": "^0.2.0",
-    "os-filter-obj": "^2.0.0",
     "puppeteer": "^24.20.0",
     "puppeteer-core": "^24.20.0",
     "react": "19.2.1",
