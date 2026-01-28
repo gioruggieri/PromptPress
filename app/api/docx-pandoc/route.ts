@@ -3,8 +3,18 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import pandocBin from "pandoc-bin";
 
 export const runtime = "nodejs";
+
+type PandocBin = { path?: string };
+
+const resolvePandocPath = () => {
+  const envPath = process.env.PANDOC_PATH;
+  if (envPath && envPath.trim()) return envPath.trim();
+  const fromPackage = (pandocBin as PandocBin | undefined)?.path;
+  return fromPackage || "pandoc";
+};
 
 const runPandoc = async (markdown: string) => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "promptpress-"));
@@ -14,6 +24,7 @@ const runPandoc = async (markdown: string) => {
   try {
     await writeFile(inputPath, markdown, "utf8");
 
+    const pandocPath = resolvePandocPath();
     const args = [
       "-f",
       "markdown+tex_math_dollars+tex_math_single_backslash+pipe_tables+task_lists+strikeout+autolink_bare_uris",
@@ -26,7 +37,7 @@ const runPandoc = async (markdown: string) => {
 
     const { code, stderr } = await new Promise<{ code: number; stderr: string }>(
       (resolve, reject) => {
-        const proc = spawn("pandoc", args, { windowsHide: true });
+        const proc = spawn(pandocPath, args, { windowsHide: true });
         let err = "";
 
         proc.stderr.on("data", (chunk) => {
@@ -38,7 +49,8 @@ const runPandoc = async (markdown: string) => {
     );
 
     if (code !== 0) {
-      throw new Error(stderr.trim() || `Pandoc exited with code ${code}`);
+      const message = stderr.trim() || `Pandoc exited with code ${code}`;
+      throw new Error(message);
     }
 
     return await readFile(outputPath);
@@ -70,7 +82,8 @@ export async function POST(request: Request) {
     let message = error instanceof Error ? error.message : "Pandoc error";
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code === "ENOENT") {
-      message = "Pandoc not found in PATH. Install Pandoc and retry.";
+      message =
+        "Pandoc not found. Set PANDOC_PATH or install pandoc-bin/pandoc on the server.";
     }
     return NextResponse.json({ error: message }, { status: 500 });
   }
