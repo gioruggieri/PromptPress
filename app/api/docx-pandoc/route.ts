@@ -16,6 +16,14 @@ const resolvePandocPath = () => {
     process.platform === "win32" ? "pandoc.exe" : "pandoc",
   );
   if (existsSync(localBinary)) return localBinary;
+  const installedBinary = path.join(
+    process.cwd(),
+    ".pandoc",
+    `pandoc-${process.env.PANDOC_VERSION || "3.1.11.1"}`,
+    "bin",
+    process.platform === "win32" ? "pandoc.exe" : "pandoc",
+  );
+  if (existsSync(installedBinary)) return installedBinary;
   return "pandoc";
 };
 

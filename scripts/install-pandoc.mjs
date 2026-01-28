@@ -101,6 +101,18 @@ const main = async () => {
     console.log("Pandoc install skipped.");
     return;
   }
+
+  const isVercel = Boolean(process.env.VERCEL);
+  const canInstall =
+    process.env.PANDOC_FORCE_INSTALL === "1" ||
+    process.env.PANDOC_ALLOW_INSTALL === "1" ||
+    process.env.NODE_ENV !== "production" ||
+    isVercel;
+
+  if (!canInstall) {
+    console.log("Pandoc install skipped (no allow flag).");
+    return;
+  }
   const target = resolveDownload();
   if (!target) {
     console.warn("Pandoc install skipped: unsupported platform", platform, arch);
