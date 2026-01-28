@@ -22,6 +22,7 @@ const resolveDownload = () => {
       filename: `pandoc-${VERSION}-linux-amd64.tar.gz`,
       innerDir: `pandoc-${VERSION}`,
       binary: "pandoc",
+      binSubdir: "bin",
     };
   }
   if (platform === "darwin" && arch === "x64") {
@@ -29,6 +30,7 @@ const resolveDownload = () => {
       filename: `pandoc-${VERSION}-macOS.zip`,
       innerDir: `pandoc-${VERSION}`,
       binary: "pandoc",
+      binSubdir: "bin",
     };
   }
   if (platform === "darwin" && arch === "arm64") {
@@ -36,6 +38,7 @@ const resolveDownload = () => {
       filename: `pandoc-${VERSION}-macOS-arm64.zip`,
       innerDir: `pandoc-${VERSION}`,
       binary: "pandoc",
+      binSubdir: "bin",
     };
   }
   if (platform === "win32") {
@@ -43,6 +46,7 @@ const resolveDownload = () => {
       filename: `pandoc-${VERSION}-windows-x86_64.zip`,
       innerDir: `pandoc-${VERSION}`,
       binary: "pandoc.exe",
+      binSubdir: "bin",
     };
   }
   return null;
@@ -127,8 +131,12 @@ const main = async () => {
     }
   }
 
-  const extracted = path.join(OUT_DIR, target.innerDir, target.binary);
-  if (!existsSync(extracted)) {
+  const candidates = [
+    path.join(OUT_DIR, target.innerDir, target.binary),
+    path.join(OUT_DIR, target.innerDir, target.binSubdir, target.binary),
+  ];
+  const extracted = candidates.find((candidate) => existsSync(candidate));
+  if (!extracted) {
     throw new Error("Pandoc binary not found after extraction");
   }
 
